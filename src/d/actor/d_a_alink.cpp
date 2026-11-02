@@ -53,10 +53,24 @@
 
 #if TARGET_PC
 #include "dusk/action_bindings.h"
-#include "dusk/frame_interpolation.h"
+#include "dusk/interp/frame_interpolation.h"
+#include "dusk/interp/sight.h"
 #include "dusk/settings.h"
 #include "res/Object/Alink.h"
 #include <cstring>
+#include <helpers/string.hpp>
+
+static const int IRON_BALL_CHAIN_COUNT = 102;
+static const int HS_CHAIN_ANCHOR_COUNT = 4;
+
+namespace {
+struct AlinkInterp {
+    dusk::interp::Samples<cXyz> ib_pos;
+    dusk::interp::Samples<csXyz> ib_angle;
+    dusk::interp::Samples<cXyz> ib_hand;
+    dusk::interp::Samples<cXyz> hs_chain;
+};
+}  // namespace
 #endif
 
 static int daAlink_Create(fopAc_ac_c* i_this);
@@ -112,31 +126,31 @@ static void daAlink_coHitCallback(fopAc_ac_c* i_coActorA, dCcD_GObjInf* i_coObjI
     static_cast<daAlink_c*>(i_coActorA)->coHitCallback(i_coActorB, i_coObjInfA);
 }
 
-static cXyz l_waitBaseAnime(1.24279f, 102.00054f, 5.0f);
+static DUSK_CONSTEXPR cXyz l_waitBaseAnime(1.24279f, 102.00054f, 5.0f);
 
-static cXyz l_ironBallBaseAnime(-4.248938f, 89.0f, -5.267045f);
+static DUSK_CONSTEXPR cXyz l_ironBallBaseAnime(-4.248938f, 89.0f, -5.267045f);
 
-static cXyz l_halfAtnWaitBaseAnime(3.5f, 97.0f, -7.0f);
+static DUSK_CONSTEXPR cXyz l_halfAtnWaitBaseAnime(3.5f, 97.0f, -7.0f);
 
-static cXyz l_rWaitBaseAnime(4.313951f, 93.94436f, -5.207283f);
+static DUSK_CONSTEXPR cXyz l_rWaitBaseAnime(4.313951f, 93.94436f, -5.207283f);
 
-static cXyz l_lWaitBaseAnime(-4.300988f, 93.95595f, -5.218504f);
+static DUSK_CONSTEXPR cXyz l_lWaitBaseAnime(-4.300988f, 93.95595f, -5.218504f);
 
-static cXyz l_horseBaseAnime(-l_waitBaseAnime.x, 225.7f, 1.81f - l_waitBaseAnime.z);
+static DUSK_CONSTEXPR cXyz l_horseBaseAnime(-l_waitBaseAnime.x, 225.7f, 1.81f - l_waitBaseAnime.z);
 
-static cXyz l_boarBaseAnime(-l_waitBaseAnime.x, 186.17f, -20.29f - l_waitBaseAnime.z);
+static DUSK_CONSTEXPR cXyz l_boarBaseAnime(-l_waitBaseAnime.x, 186.17f, -20.29f - l_waitBaseAnime.z);
 
-static cXyz l_localHorseRidePos(-68.208984f, 41.609924f, 0.883789f);
+static DUSK_CONSTEXPR cXyz l_localHorseRidePos(-68.208984f, 41.609924f, 0.883789f);
 
-static cXyz l_localBoarRidePos(0.0f, 15.0f, 0.0f);
+static DUSK_CONSTEXPR cXyz l_localBoarRidePos(0.0f, 15.0f, 0.0f);
 
-static cXyz l_canoeBaseAnime(1.24279f - l_waitBaseAnime.x, 56.0f, -72.0f - l_waitBaseAnime.z);
+static DUSK_CONSTEXPR cXyz l_canoeBaseAnime(1.24279f - l_waitBaseAnime.x, 56.0f, -72.0f - l_waitBaseAnime.z);
 
-static cXyz l_sumouBaseAnimeSp(0.0f, 0.0f, 32.0f - l_waitBaseAnime.z);
+static DUSK_CONSTEXPR cXyz l_sumouBaseAnimeSp(0.0f, 0.0f, 32.0f - l_waitBaseAnime.z);
 
-static cXyz l_wolfBaseAnime(1.0f, 88.63934f, -28.497932f);
+static cXyz DUSK_CONST l_wolfBaseAnime(1.0f, 88.63934f, -28.497932f);
 
-static cXyz l_wolfRopeBaseAnime(0.115164f, 68.336296f, -7.667817f);
+static cXyz DUSK_CONST l_wolfRopeBaseAnime(0.115164f, 68.336296f, -7.667817f);
 
 static void dummy_lit_3757() {
     Vec temp = { 0.0f, 0.0f, 0.0f };
@@ -216,7 +230,7 @@ static s16 const l_insectNameList[12] = {
 f32 l_jumpTop;
 #endif
 
-daAlink_BckData const daAlink_c::m_mainBckShield[20] = {
+DUSK_GAME_DATA daAlink_BckData const daAlink_c::m_mainBckShield[20] = {
     {dRes_ID_ALANM_BCK_ATRFWS_e, dRes_ID_ALANM_BCK_ATRFWS_e},
     {dRes_ID_ALANM_BCK_ATRFDS_e, dRes_ID_ALANM_BCK_ATRFDS_e},
     {dRes_ID_ALANM_BCK_ATBW_e, dRes_ID_ALANM_BCK_ATLS_e},
@@ -239,7 +253,7 @@ daAlink_BckData const daAlink_c::m_mainBckShield[20] = {
     {dRes_ID_ALANM_BCK_DASHS_e, dRes_ID_ALANM_BCK_ATLS_e},
 };
 
-daAlink_BckData const daAlink_c::m_mainBckSword[5] = {
+DUSK_GAME_DATA daAlink_BckData const daAlink_c::m_mainBckSword[5] = {
     {dRes_ID_ALANM_BCK_ATL_e, dRes_ID_ALANM_BCK_ATL_e},
     {dRes_ID_ALANM_BCK_ATR_e, dRes_ID_ALANM_BCK_ATR_e},
     {dRes_ID_ALANM_BCK_WALKS_e, dRes_ID_ALANM_BCK_WALKS_e},
@@ -247,7 +261,7 @@ daAlink_BckData const daAlink_c::m_mainBckSword[5] = {
     {dRes_ID_ALANM_BCK_SWIMWAIT_e, dRes_ID_ALANM_BCK_SWIMWAITS_e},
 };
 
-daAlink_BckData const daAlink_c::m_mainBckFishing[28] = {
+DUSK_GAME_DATA daAlink_BckData const daAlink_c::m_mainBckFishing[28] = {
     {dRes_ID_ALANM_BCK_ATRFWS_e, dRes_ID_ALANM_BCK_WALKFISHR_e},
     {dRes_ID_ALANM_BCK_ATRFDS_e, dRes_ID_ALANM_BCK_DASHFISHR_e},
     {dRes_ID_ALANM_BCK_ATBW_e, dRes_ID_ALANM_BCK_WALKFISHR_e},
@@ -278,7 +292,7 @@ daAlink_BckData const daAlink_c::m_mainBckFishing[28] = {
     {dRes_ID_ALANM_BCK_WAITBTOA_e, dRes_ID_ALANM_BCK_WALKFISHR_e},
 };
 
-daAlink_AnmData const daAlink_c::m_anmDataTable[daAlink_c::ANM_MAX] = {
+DUSK_GAME_DATA daAlink_AnmData const daAlink_c::m_anmDataTable[daAlink_c::ANM_MAX] = {
     {dRes_ID_ALANM_BCK_ATRFWS_e, dRes_ID_ALANM_BCK_ATRFW_e, 0xFE, 0xFE, FTANM_0, dRes_ID_ALANM_BCK_FAT_e, 0x0},
     {dRes_ID_ALANM_BCK_ATRFDS_e, dRes_ID_ALANM_BCK_ATRFD_e, 0xFE, 0xFE, FTANM_0, dRes_ID_ALANM_BCK_FAT_e, 0x0},
     {dRes_ID_ALANM_BCK_ATBW_e, dRes_ID_ALANM_BCK_ATBW_e, 0xFE, 0xFE, FTANM_0, dRes_ID_ALANM_BCK_FAT_e, 0x0},
@@ -695,7 +709,7 @@ daAlink_AnmData const daAlink_c::m_anmDataTable[daAlink_c::ANM_MAX] = {
     {dRes_ID_ALANM_BCK_ASHIMOTO_e, dRes_ID_ALANM_BCK_ASHIMOTO_e, 0xFE, 0xFE, FTANM_ASHIMOTO, dRes_ID_ALANM_BCK_FASHIMOTO_e, 0x0},
 };
 
-daAlink_WlAnmData const daAlink_c::m_wlAnmDataTable[daAlink_c::WANM_MAX] = {
+DUSK_GAME_DATA daAlink_WlAnmData const daAlink_c::m_wlAnmDataTable[daAlink_c::WANM_MAX] = {
     {dRes_ID_ALANM_BCK_WL_WAITA_e, 0x0, 0x1, 10, 40, -1, -1},
     {dRes_ID_ALANM_BCK_WL_WALKA_e, 0x0, 0x2, 1, 14, -1, -1},
     {dRes_ID_ALANM_BCK_WL_WALKB_e, 0x0, 0x2, 1, 14, -1, -1},
@@ -845,7 +859,7 @@ daAlink_WlAnmData const daAlink_c::m_wlAnmDataTable[daAlink_c::WANM_MAX] = {
     {0x802B, 0xC, 0xC, -1, -1, -1, -1},
 };
 
-daAlink_FaceTexData const daAlink_c::m_faceTexDataTable[] = {
+DUSK_GAME_DATA daAlink_FaceTexData const daAlink_c::m_faceTexDataTable[] = {
     {dRes_ID_ALANM_BTP_FMABA01_e, dRes_ID_ALANM_BTK_FMABA01_e},
     {dRes_ID_ALANM_BTP_FMABA02_e, dRes_ID_ALANM_BTK_FMABA02_e},
     {dRes_ID_ALANM_BTP_FMABA03_e, dRes_ID_ALANM_BTK_FMABA03_e},
@@ -1011,7 +1025,7 @@ daAlink_FaceTexData const daAlink_c::m_faceTexDataTable[] = {
     {dRes_ID_ALANM_BTP_WL_FC_e, dRes_ID_ALANM_BTK_WL_FA_e},
 };
 
-const daAlink_procInitTable daAlink_c::m_procInitTable[] = {
+DUSK_GAME_DATA const daAlink_procInitTable daAlink_c::m_procInitTable[] = {
     { &daAlink_c::procPreActionUnequip, 0x21 },
     { &daAlink_c::procServiceWait, 0x10000085 },
     { &daAlink_c::procTiredWait, 0x10001185 },
@@ -1366,7 +1380,7 @@ const daAlink_procInitTable daAlink_c::m_procInitTable[] = {
     { &daAlink_c::procDemoCommon, 0x1 },
 };
 
-daAlink_procFunc daAlink_c::m_demoInitTable[] = {
+DUSK_GAME_DATA daAlink_procFunc daAlink_c::m_demoInitTable[] = {
     NULL,
     NULL,
     NULL,
@@ -2002,9 +2016,9 @@ daAlinkHIO_cut_c::~daAlinkHIO_cut_c() {}
 
 daAlinkHIO_c::~daAlinkHIO_c() {}
 
-bool daAlink_matAnm_c::m_eye_move_flg;
+DUSK_GAME_DATA bool daAlink_matAnm_c::m_eye_move_flg;
 
-u8 daAlink_matAnm_c::m_morf_frame;
+DUSK_GAME_DATA u8 daAlink_matAnm_c::m_morf_frame;
 
 void daAlink_matAnm_c::init() {
     field_0xf4 = 0.0f;
@@ -5990,7 +6004,7 @@ void daAlink_c::setItemMatrix(int param_0) {
 
         mDoMtx_stack_c::XrotS(-0x8000);
 #ifdef TARGET_PC
-        if (dusk::getSettings().game.enableFrameInterpolation) {
+        if (dusk::interp::is_enabled()) {
             Mtx boot_mtx;
             mDoMtx_concat(mpLinkModel->getAnmMtx(0x18), mDoMtx_stack_c::get(), boot_mtx);
             mpLinkBootModels[1]->setAnmMtx(1, boot_mtx);
@@ -7562,12 +7576,7 @@ void daAlink_c::setBlendMoveAnime(f32 i_morf) {
     f32 sp2C;
     f32 sp28 = mpHIO->mMove.m.mFootPositionRatio;
     BOOL sp24 = checkEventRun();
-    BOOL sp20 = checkBootsMoveAnime(1);
-#if TARGET_PC
-    if (dusk::getSettings().game.enableFastIronBoots) {
-        sp20 = FALSE;
-    }
-#endif
+    BOOL sp20 = checkBootsMoveAnime(1) IF_DUSK(&& !dusk::getSettings().game.enableFastIronBoots);
 
     f32 var_f29;
 
@@ -8080,7 +8089,7 @@ void daAlink_c::setBlendAtnBackMoveAnime(f32 i_morf) {
     daAlink_ANM var_r27;
     daAlink_ANM var_r29;
 
-    if (checkBootsMoveAnime(1)) {
+    if (checkBootsMoveAnime(1) IF_DUSK(&& !dusk::getSettings().game.enableFastIronBoots)) {
         mMaxSpeed = mpHIO->mAtnMove.m.mMaxBackwardsSpeed;
         var_f27 = mpHIO->mAtnMove.m.mMinBackWalkFrame;
         var_f31 = mpHIO->mAtnMove.m.mBackWalkChangeRate;
@@ -12738,7 +12747,19 @@ void daAlink_c::setMagicArmorBrk(int i_status) {
 
 BOOL daAlink_c::checkMagicArmorHeavy() const {
 #if TARGET_PC
-    return checkMagicArmorWearAbility() && (dComIfGs_getRupee() == 0 && !dusk::getSettings().game.freeMagicArmor);
+    if(!checkMagicArmorWearAbility()) {
+        return false;
+    }
+
+    switch(dusk::getSettings().game.armorRupeeDrain) {
+        case dusk::MagicArmorMode::NORMAL:
+            return dComIfGs_getRupee() == 0;
+        case dusk::MagicArmorMode::ON_DAMAGE:
+        case dusk::MagicArmorMode::DOUBLE_DEFENSE:
+        case dusk::MagicArmorMode::INVINCIBLE:
+        case dusk::MagicArmorMode::COSMETIC:
+            return false;
+    }
 #else
     return checkMagicArmorWearAbility() && dComIfGs_getRupee() == 0;
 #endif
@@ -14798,8 +14819,13 @@ void daAlink_c::deleteEquipItem(BOOL i_isPlaySound, BOOL i_isDeleteKantera) {
     mIronBallChainAngle = NULL;
     field_0x3848 = NULL;
 #if TARGET_PC
-    mIBChainInterpPrevValid = false;
-    mIBChainInterpCurrValid = false;
+    {
+        auto& interp = dusk::interp::get<AlinkInterp>(this);
+        interp.ib_pos.reset();
+        interp.ib_angle.reset();
+        interp.ib_hand.reset();
+        interp.hs_chain.reset();
+    }
 #endif
     field_0x0774 = NULL;
     field_0x0778 = NULL;
@@ -18711,7 +18737,7 @@ int daAlink_c::execute() {
 #if TARGET_PC
             // This handles rupee drain and transitions between rupees/no rupees
             // We can skip all of that if the magic armor doesn't use rupees
-            if (!dusk::getSettings().game.freeMagicArmor && checkMagicArmorWearAbility() && mClothesChangeWaitTimer == 0) {
+            if (dusk::getSettings().game.armorRupeeDrain.getValue() == dusk::MagicArmorMode::NORMAL && checkMagicArmorWearAbility() && mClothesChangeWaitTimer == 0) {
 #else
             if (checkMagicArmorWearAbility() && mClothesChangeWaitTimer == 0) {
 #endif
@@ -19772,23 +19798,22 @@ int daAlink_c::draw() {
                 dComIfGd_getOpaListDark()->entryImm(mpHookChain, 0);
 
 #if TARGET_PC
-                if (dusk::getSettings().game.enableFrameInterpolation &&
-                    mEquipItem == dItemNo_IRONBALL_e &&
-                    mIronBallChainPos != NULL && mIronBallChainAngle != NULL)
-                {
-                    if (mIBChainInterpCurrValid) {
-                        memcpy(mIBChainInterpPrevPos, mIBChainInterpCurrPos, IRON_BALL_CHAIN_COUNT * sizeof(cXyz));
-                        memcpy(mIBChainInterpPrevAngle, mIBChainInterpCurrAngle, IRON_BALL_CHAIN_COUNT * sizeof(csXyz));
-                        mIBChainInterpPrevHandRoot = mIBChainInterpCurrHandRoot;
-                        mIBChainInterpPrevValid = true;
+                if (dusk::interp::should_capture()) {
+                    auto& interp = dusk::interp::get<AlinkInterp>(this);
+                    if (mEquipItem == dItemNo_IRONBALL_e &&
+                        mIronBallChainPos != NULL && mIronBallChainAngle != NULL)
+                    {
+                        interp.ib_pos.capture(mIronBallChainPos, IRON_BALL_CHAIN_COUNT);
+                        interp.ib_angle.capture(mIronBallChainAngle, IRON_BALL_CHAIN_COUNT);
+                        interp.ib_hand.capture(&mHookshotTopPos, 1);
+                    } else {
+                        cXyz hsAnchors[HS_CHAIN_ANCHOR_COUNT];
+                        hsAnchors[0] = mHookshotTopPos;
+                        hsAnchors[1] = mHeldItemRootPos;
+                        hsAnchors[2] = field_0x3810;
+                        hsAnchors[3] = mIronBallBgChkPos;
+                        interp.hs_chain.capture(hsAnchors, HS_CHAIN_ANCHOR_COUNT);
                     }
-
-                    memcpy(mIBChainInterpCurrPos, mIronBallChainPos, IRON_BALL_CHAIN_COUNT * sizeof(cXyz));
-                    memcpy(mIBChainInterpCurrAngle, mIronBallChainAngle, IRON_BALL_CHAIN_COUNT * sizeof(csXyz));
-                    mIBChainInterpCurrHandRoot = mHookshotTopPos;
-                    mIBChainInterpCurrValid = true;
-
-                    dusk::frame_interp::add_interpolation_callback(&ironBallChainInterpCallback, this);
                 }
 #endif
             }
@@ -19894,13 +19919,13 @@ static int daAlink_Delete(daAlink_c* i_this) {
     }
 }
 
-static actor_method_class l_daAlink_Method = {
+static DUSK_CONST actor_method_class l_daAlink_Method = {
     (process_method_func)daAlink_Create,  (process_method_func)daAlink_Delete,
     (process_method_func)daAlink_Execute, (process_method_func)NULL,
     (process_method_func)daAlink_Draw,
 };
 
-actor_process_profile_definition g_profile_ALINK = {
+DUSK_PROFILE actor_process_profile_definition DUSK_CONST g_profile_ALINK = {
     /* Layer ID     */ fpcLy_CURRENT_e,
     /* List ID      */ 5,
     /* List Prio    */ fpcPi_CURRENT_e,

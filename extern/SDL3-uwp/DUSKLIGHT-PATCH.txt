@@ -1,0 +1,18 @@
+SDL3 para UWP usada por el port de Dusklight 2.0.3 (version modificada).
+
+Origen: https://github.com/XboxEmulationHub/SDL3-uwp
+Commit: ddd5d4f99a26ac95d4620ccf489c07fcf5f08636 (rama uwp-3.4.16; el mismo con el que se compilo
+        la SDL3.dll de uwp-dep 810cdcb, "SDL-3.4.16-release-3.4.16-3-gddd5d4f99").
+
+Cambio: src/thread/stdcpp/SDL_systhread.cpp guarda thread->threadid al crear el hilo.
+        Parche: platforms/uwp/patches/sdl3-uwp-threadid.patch
+        Sin el, SDL_GetThreadID() devuelve 0 en UWP y abrir un dispositivo de audio WASAPI se
+        queda bloqueado para siempre (el hilo SDLWASAPIMgmt se encarga trabajo a si mismo).
+
+        Ademas, .gitignore y src/render/gpu/shaders/.gitignore llevan excepciones para que Git no
+        omita ficheros que SDL3-uwp si incluye (solo afecta al repositorio, no a la compilacion).
+
+Omitido de la copia (no hace falta para compilar): test, examples, docs, android-project, Xcode,
+VisualC, VisualC-GDK, VisualC-WinRT, .github, AGENTS.md, CLAUDE.md.
+
+Compilar: tools\uwp\sdl3.bat (ver GUIA_UWP.md). Licencia: LICENSE.txt (zlib).

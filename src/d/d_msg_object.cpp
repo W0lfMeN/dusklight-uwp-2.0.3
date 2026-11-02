@@ -24,17 +24,34 @@
 #include "f_op/f_op_msg_mng.h"
 #include <cstdio>
 #include <cstring>
-
-#include "JSystem/JKernel/JKRExpHeap.h"
-#include "dusk/version.hpp"
 #include "m_Do/m_Do_controller_pad.h"
 #include "m_Do/m_Do_lib.h"
+#include "JSystem/JKernel/JKRExpHeap.h"
 
 #if TARGET_PC
+#include "dusk/interp/user_interface.h"
+#include "dusk/language.hpp"
+#include "dusk/logging.h"
+#include "dusk/menu_pointer.h"
+#include "dusk/mods/item.hpp"
+#include "dusk/mods/svc/flow.hpp"
 #include "dusk/settings.h"
-#include <vector>
-#include <array>
+#include "dusk/version.hpp"
+
+#include <absl/container/flat_hash_map.h>
+
 #include <algorithm>
+#include <array>
+#include <vector>
+
+namespace {
+struct MessageAnimation {
+    int phase = -1;
+    dusk::vdt::FrameAnimation frame, alpha;
+};
+
+absl::flat_hash_map<const dMsgObject_c*, MessageAnimation> sMessageAnimations;
+}  // namespace
 #endif
 
 static void dMsgObject_addFundRaising(s16 param_0);
@@ -313,9 +330,17 @@ dMsgObject_HIO_c::dMsgObject_HIO_c() {
 }
 
 int dMsgObject_c::_create(msg_class* param_1) {
+#if TARGET_PC
+    sMessageAnimations.erase(this);
+    if (dusk::version::isRegionJpn())
+        g_MsgObject_HIO_c.mBoxTalkScaleX = 1.1f;
+    else
+        g_MsgObject_HIO_c.mBoxTalkScaleX = 1.2f;
+#endif
+
     field_0x124 = NULL;
     field_0x100 = param_1;
-    field_0x16c = -1;
+    mCurrentGroupID = -1;
     field_0x16e = -1;
     mNowTalkFlowNo = 0;
     mpTalkActor = NULL;
@@ -402,7 +427,7 @@ int dMsgObject_c::_create(msg_class* param_1) {
     field_0x197 = 0;
     mMessageID = 1000;
     field_0x158 = mMessageID;
-    field_0x15c = 0;
+    mSelectMessageID = 0;
     field_0x172 = 0;
     setStatusLocal(1);
     mpMsgString = JKR_NEW dMsgString_c();
@@ -424,20 +449,9 @@ static void dummyStrings() {
     DEAD_STRING("");
 }
 
-dMsgObject_HIO_c g_MsgObject_HIO_c;
+DUSK_GAME_DATA dMsgObject_HIO_c g_MsgObject_HIO_c;
 
 int dMsgObject_c::_execute() {
-// TODO: enabling wii message overrides fixes direction text, but gives wrong item control text
-/*#if TARGET_PC
-    if (dusk::getSettings().game.enableMirrorMode) {
-        // enable wii message index override
-        g_MsgObject_HIO_c.mMessageDisplay = 1;
-    } else if (!dusk::getSettings().game.enableMirrorMode && g_MsgObject_HIO_c.mMessageDisplay == 1) {
-        g_MsgObject_HIO_c.mMessageDisplay = 0;
-    }
-#endif*/
-
-
     field_0x4c7 = 0;
     if (mpTalkHeap != NULL) {
         field_0x148 = mDoExt_setCurrentHeap(mpTalkHeap);
@@ -461,12 +475,12 @@ int dMsgObject_c::_execute() {
             mpCtrl->setMessageCode(mpRefer->getRevoMessageID());
             mpRefer->setRevoMessageID(0);
             jmessage_tReference* pRef = (jmessage_tReference*)mpRenProc->getReference();
-            strcpy(pRef->getTextPtr(), "");
-            strcpy(pRef->getTextSPtr(), "");
-            strcpy(pRef->getRubyPtr(), "");
+            SAFE_STRCPY(pRef->getTextPtr(), "");
+            SAFE_STRCPY(pRef->getTextSPtr(), "");
+            SAFE_STRCPY(pRef->getRubyPtr(), "");
             for (int i = 0; i < 3; i++) {
-                strcpy(pRef->getSelTextPtr(i), "");
-                strcpy(pRef->getSelRubyPtr(i), "");
+                SAFE_STRCPY(pRef->getSelTextPtr(i), "");
+                SAFE_STRCPY(pRef->getSelRubyPtr(i), "");
             }
         }
         field_0x4ca = mpCtrl->update();
@@ -568,7 +582,100 @@ int dMsgObject_c::_draw() {
     return 1;
 }
 
+#if TARGET_PC
+static void startAnimation(dMsgObject_c& message, int phase, f32 from, f32 target) {
+    auto& animations = sMessageAnimations[&message];
+    auto& animation = animations.frame;
+    if (animations.phase != phase) {
+        animation.start(from, target);
+    } else {
+        animation.approach(from, target);
+    }
+    animations.phase = phase;
+}
+
+void dMsgObject_c::presentAnims() {
+    if (mpScrnDraw == NULL || mpOutFont == NULL || !dusk::game_clock::g_frameTiming.interpolating) {
+        return;
+    }
+    const auto found = sMessageAnimations.find(this);
+    if (found == sMessageAnimations.end()) {
+        return;
+    }
+    auto& animations = found->second;
+    const u16 status = getStatusLocal();
+    if (animations.phase != status) {
+        return;
+    }
+
+    auto& animation = animations.frame;
+    const f32 frame = animation.advance(field_0x16a);
+    f32 target = 0.0f;
+    if (status == 2) {
+        if (isPlaceMessage() || isStaffMessage()) {
+            target = g_MsgObject_HIO_c.mStageTitleFadeIn;
+        } else if (isBossMessage()) {
+            target = g_MsgObject_HIO_c.mBossNameFadeIn;
+        } else if (isBookMessage()) {
+            target = g_MsgObject_HIO_c.mBoxAppearFrame + g_MsgObject_HIO_c.mWaitFrame +
+                     g_MsgObject_HIO_c.mLightAppearFrame;
+        } else {
+            target = g_MsgObject_HIO_c.mBoxAppearFrame;
+        }
+        const f32 ratio = dusk::vdt::clamped_fraction(frame, target);
+        mpScrnDraw->fukiAlpha(ratio);
+        mpOutFont->setAlphaRatio(ratio);
+        if (isKanbanMessage() || isPlaceMessage() || isStaffMessage() || isBossMessage()) {
+            mpScrnDraw->fukiScale(ratio);
+        } else if (isBookMessage()) {
+            s16 waitEnd = g_MsgObject_HIO_c.mBoxAppearFrame + g_MsgObject_HIO_c.mWaitFrame;
+            if (frame >= waitEnd && frame <= waitEnd + g_MsgObject_HIO_c.mLightAppearFrame) {
+                f32 scale = dusk::vdt::clamped_fraction(frame - waitEnd, g_MsgObject_HIO_c.mLightAppearFrame);
+                mpScrnDraw->fukiScale(scale);
+            }
+        } else {
+            mpScrnDraw->fukiScale(1.0f);
+        }
+    } else if (status == 17) {
+        if (isKanbanMessage() || isBookMessage()) {
+            target = g_MsgObject_HIO_c.field_0x304;
+        } else if (isPlaceMessage() || isStaffMessage()) {
+            target = g_MsgObject_HIO_c.mStageTitleFadeOut;
+        } else if (isBossMessage()) {
+            target = g_MsgObject_HIO_c.mBossNameFadeOut;
+        } else {
+            target = 5.0f;
+        }
+        f32 ratio = dusk::vdt::clamped_fraction(frame, target);
+        mpScrnDraw->fukiAlpha(1.0f - ratio);
+        if (isBookMessage()) {
+            mpScrnDraw->fukiScale(1.0f - ratio);
+        }
+        mpOutFont->setAlphaRatio(1.0f - ratio);
+    } else if (status == 6) {
+        if (isBookMessage() && frame > 0) {
+            f32 alpha = (10 - frame) / 10.0f;
+            mpScrnDraw->fontAlpha(alpha);
+            mpOutFont->setAlphaRatio(alpha);
+        }
+        jmessage_tReference* pRef = (jmessage_tReference*)mpRenProc->getReference();
+        if (pRef->getCharAllAlphaRate() < 1.0f) {
+            f32 alpha = animations.alpha.advance(pRef->getCharAllAlphaRate());
+            mpScrnDraw->setCharAlphaRate(alpha);
+            mpOutFont->setAlphaRatio(alpha);
+        }
+    } else if (status == 5 && isBookMessage() && (field_0x199 || frame > 0)) {
+        if (frame <= 10) {
+            f32 alpha = (10 - frame) / 10.0f;
+            mpScrnDraw->fontAlpha(alpha);
+            mpOutFont->setAlphaRatio(alpha);
+        }
+    }
+}
+#endif
+
 int dMsgObject_c::_delete() {
+    IF_DUSK(sMessageAnimations.erase(this));
     mpResCont->destroyResource_all();
     if (mpScrnDraw != NULL) {
         JKR_DELETE(mpScrnDraw);
@@ -604,14 +711,91 @@ int dMsgObject_c::_delete() {
     return 1;
 }
 
-void dMsgObject_c::setMessageIndex(u32 revoIndex, u32 param_2, bool param_3) {
+#if TARGET_PC
+struct MirrorMsgOverride {
+    u32 gcMsgId;
+    u32 wiiMsgId;
+};
+
+static const MirrorMsgOverride mirrorMsgOverrides[] = {
+    {0x153a, 0x3c4a},
+    {0x1553, 0x3c63},
+    {0x1558, 0x3c68},
+    {0x155c, 0x3c6c},
+    {0x1569, 0x3c79},
+    {0x156f, 0x3c7f},
+    {0x1f81, 0x4691},
+    {0x232a, 0x4a3a},
+    {0x13f2, 0x3b02},
+    {0x1416, 0x3b26},
+    {0x1417, 0x3b27},
+    {0x1419, 0x3b29},
+    {0x1521, 0x3c31},
+    {0x1614, 0x3d24},
+    {0x1626, 0x3d36},
+    {0x1628, 0x3d38},
+    {0x16aa, 0x3dba},
+    {0x16b8, 0x3dc8},
+    {0x16b9, 0x3dc9},
+    {0x1904, 0x4014},
+    {0x1919, 0x4029},
+    {0x19cd, 0x40dd},
+    {0x19d3, 0x40e3},
+    {0x19d6, 0x40e6},
+    {0x19e6, 0x40f6},
+    {0x19eb, 0x40fb},
+    {0x14b6, 0x3bc6},
+    {0x151a, 0x3c2a},
+    {0x1530, 0x3c40},
+    {0x1532, 0x3c42},
+    {0x2726, 0x4e36},
+    {0x2736, 0x4e46},
+    {0x2739, 0x4e49},
+    {0x274c, 0x4e5c},
+    {0x24da, 0x4bea},
+    {0x24db, 0x4beb},
+    {0x13d8, 0x3ae8},
+    {0x13dc, 0x3aec},
+    {0x13eb, 0x3afb},
+    {0x17df, 0x3eef},
+    {0x17e2, 0x3ef2},
+    {0x1dae, 0x44be},
+    {0x14ca, 0x3bda},
+    {0x470, 0x493},
+    {0x473, 0x492},
+    {0x1f41, 0x4651},
+    {0x1f42, 0x4652},
+    {0x0847, 0x0870},
+    {0x0d5c, 0x0d65},
+    {0x0a97, 0x0a98},
+    {0x0327, 0x12ba},
+    {0x0328, 0x12bb},
+    {0x1534, 0x3c44},
+    {0x1536, 0x3c46},
+    {0x1557, 0x3c67},
+    {0x1b88, 0x4298},
+    {0x14c8, 0x3bd8},
+    {0x151b, 0x3c2b},
+};
+
+static u32 getMirrorMsgOverride(u32 msgId) {
+    for (size_t i = 0; i < sizeof(mirrorMsgOverrides) / sizeof(mirrorMsgOverrides[0]); i++) {
+        if (mirrorMsgOverrides[i].gcMsgId == msgId) {
+            return mirrorMsgOverrides[i].wiiMsgId;
+        }
+    }
+    return msgId;
+}
+#endif
+
+void dMsgObject_c::setMessageIndex(u32 revoIndex, u32 i_selectMsgID, bool param_3) {
     field_0x158 = revoIndex;
     revoIndex = getRevoMessageIndex(revoIndex);
     if (field_0x4cc == 0) {
         mNoDemoFlag = 1;
     }
     mMessageID = revoIndex;
-    field_0x15c = param_2;
+    mSelectMessageID = i_selectMsgID;
     field_0x4d1 = 0;
     if (mpTalkPartner != field_0x13c && mpTalkPartner != NULL) {
         dComIfGp_event_setTalkPartner(mpTalkPartner);
@@ -626,12 +810,58 @@ void dMsgObject_c::setMessageIndex(u32 revoIndex, u32 param_2, bool param_3) {
 
     JMSMesgInfo_c* pMsg = (JMSMesgInfo_c*)((char*)mpMsgDt + 0x20);
     u8* iVar2 = (u8*)pMsg + pMsg->header.size;
-    u32 msg_id = getMessageIndex(revoIndex);
-    dComIfGp_setMesgCameraAttrInfo(pMsg->entries[msg_id].camera_id);
-    if (field_0x15c == 1000) {
-        mpRefer->setSelMsgPtr(NULL);
+#if TARGET_PC
+    const void* customEntry = NULL;
+    const char* customText = NULL;
+    u16 customGroup = 0;
+    if (dusk::flow::custom_message_group(static_cast<u16>(revoIndex), customGroup)) {
+        if (dusk::flow::custom_message_for_control(
+                mpCtrl, static_cast<u16>(revoIndex), customEntry, customText))
+        {
+            dComIfGp_setMesgCameraAttrInfo(static_cast<const u8*>(customEntry)[0x0f]);
+        }
     } else {
-        u32 msgIndex = getMessageIndex(field_0x15c);
+#endif
+    u32 msg_id = getMessageIndex(revoIndex);
+    dComIfGp_setMesgCameraAttrInfo(pMsg->entries[msg_id].camera_attr);
+#if TARGET_PC
+    }
+    const auto setSelectionMessage = [&] {
+        const void* selectionEntry = NULL;
+        const char* selectionText = NULL;
+        u16 selectionGroup = 0;
+        if (dusk::flow::custom_message_group(static_cast<u16>(mSelectMessageID), selectionGroup)) {
+            if (dusk::flow::custom_message_for_control(
+                    mpCtrl, static_cast<u16>(mSelectMessageID), selectionEntry, selectionText))
+            {
+                mpRefer->setSelMsgPtr(const_cast<char*>(selectionText));
+            } else {
+                mpRefer->setSelMsgPtr(NULL);
+            }
+            return;
+        }
+        u32 msgIndex = getMessageIndex(mSelectMessageID);
+        if (msgIndex == 0x264) {
+            mpRefer->setSelMsgPtr(NULL);
+            return;
+        }
+        char* nativeText = (char*)(iVar2 + pMsg->entries[msgIndex].string_offset + 8);
+        const void* resolvedEntry = &pMsg->entries[msgIndex];
+        const char* resolvedText = nativeText;
+        dusk::flow::resolve_message_for_control(mpCtrl, mpMsgDt, static_cast<u16>(msgIndex),
+            resolvedEntry, nativeText, resolvedEntry, resolvedText);
+        mpRefer->setSelMsgPtr(const_cast<char*>(resolvedText));
+    };
+#endif
+    if (mSelectMessageID == 1000) {
+        mpRefer->setSelMsgPtr(NULL);
+#if TARGET_PC
+    } else {
+        setSelectionMessage();
+    }
+#else
+    } else {
+        u32 msgIndex = getMessageIndex(mSelectMessageID);
         if (msgIndex == 0x264) {
             mpRefer->setSelMsgPtr(NULL);
         } else {
@@ -639,6 +869,7 @@ void dMsgObject_c::setMessageIndex(u32 revoIndex, u32 param_2, bool param_3) {
             mpRefer->setSelMsgPtr(my_ptr);
         }
     }
+#endif
     if (param_3) {
         mpCtrl->setMessageID(mMessageID, 0, NULL);
     }
@@ -651,7 +882,7 @@ void dMsgObject_c::setMessageIndexDemo(u32 revoMsgIndex, bool param_2) {
     field_0x4d4 = 1;
     dMsgObject_onCameraCancelFlag();
     mMessageID = revoMsgIndex;
-    field_0x15c = 0x264;
+    mSelectMessageID = 0x264;
     field_0x4d1 = 0;
     if (mpTalkPartner != field_0x13c && mpTalkPartner != NULL) {
         dComIfGp_event_setTalkPartner(mpTalkPartner);
@@ -665,8 +896,23 @@ void dMsgObject_c::setMessageIndexDemo(u32 revoMsgIndex, bool param_2) {
     mpRefer->setPageNum(field_0x172);
     JMSMesgInfo_c* info_header_p = (JMSMesgInfo_c*)((char*)mpMsgDt + 0x20);
     JMSMesgInfo_c* reg_25 = (JMSMesgInfo_c*)((char*) info_header_p + info_header_p->header.size);
+#if TARGET_PC
+    const void* customEntry = NULL;
+    const char* customText = NULL;
+    u16 customGroup = 0;
+    if (dusk::flow::custom_message_group(static_cast<u16>(revoMsgIndex), customGroup)) {
+        if (dusk::flow::custom_message_for_control(
+                mpCtrl, static_cast<u16>(revoMsgIndex), customEntry, customText))
+        {
+            dComIfGp_setMesgCameraAttrInfo(static_cast<const u8*>(customEntry)[0x0f]);
+        }
+    } else {
+#endif
     int ind = getMessageIndex(revoMsgIndex);
-    dComIfGp_setMesgCameraAttrInfo(info_header_p->entries[ind].camera_id);
+    dComIfGp_setMesgCameraAttrInfo(info_header_p->entries[ind].camera_attr);
+#if TARGET_PC
+    }
+#endif
     mpRefer->setSelMsgPtr(NULL);
     if (param_2) {
         mpCtrl->setMessageID(mMessageID, 0, NULL);
@@ -692,9 +938,28 @@ u32 dMsgObject_c::getMessageIndex(u32 param_0) {
 }
 
 u32 dMsgObject_c::getRevoMessageIndex(u32 param_1) {
-    if (!g_MsgObject_HIO_c.mMessageDisplay) {
+#if TARGET_PC
+    const u16 sourceGroup = param_1 > 5000 ? static_cast<u16>(s_groupID) : 0;
+    param_1 = dusk::mods::item_check_message(sourceGroup, param_1);
+
+    u16 customGroup = 0;
+    if (param_1 <= 0xffff &&
+        dusk::flow::custom_message_group(static_cast<u16>(param_1), customGroup))
+    {
         return param_1;
     }
+    if (!dusk::getSettings().game.enableMirrorMode) {
+        if (!g_MsgObject_HIO_c.mMessageDisplay) {
+            return param_1;
+        }
+    }
+    if (param_1 == getMirrorMsgOverride(param_1)) {
+        return param_1;
+    }
+#else 
+    if (!g_MsgObject_HIO_c.mMessageDisplay) { return param_1; } 
+#endif
+
     u32 msgIndexCount;
     JMSMesgInfo_c* pMsg;
     int i = 0;
@@ -746,6 +1011,14 @@ u32 dMsgObject_c::getMessageIDAlways(u32 param_0) {
 }
 
 s16 dMsgObject_c::getMessageGroup(u32 param_0) {
+#if TARGET_PC
+    u16 customGroup = 0;
+    if (param_0 <= 0xffff &&
+        dusk::flow::custom_message_group(static_cast<u16>(param_0), customGroup))
+    {
+        return static_cast<s16>(customGroup);
+    }
+#endif
     s16 messageGroup = 0;
     OS_REPORT("getMessgeGroup! msg no====>%d\n", param_0);
     if (param_0 > 5000) {
@@ -772,7 +1045,7 @@ void dMsgObject_c::waitProc() {
                     if (mMessageID >= 0x47f && mMessageID <= 0x487) {
                         setMessageIndexDemo(mMessageID, true);
                     } else {
-                        setMessageIndex(mMessageID, field_0x15c, true);
+                        setMessageIndex(mMessageID, mSelectMessageID, true);
                     }
                 }
             }
@@ -792,6 +1065,13 @@ void dMsgObject_c::waitProc() {
 }
 
 void dMsgObject_c::openProc() {
+#if TARGET_PC
+    auto& animations = sMessageAnimations[this];
+    if (field_0x16a == 0) {
+        animations.phase = -1;
+        animations.alpha = {};
+    }
+#endif
     if (isMidonaMessage()) {
         bool uVar12 = 0;
         if (field_0x16a == 0) {
@@ -818,7 +1098,7 @@ void dMsgObject_c::openProc() {
                 field_0x16a = 9;
             }
             if (mpRefer->getMsgID() == 0x7fa) {
-                mpScrnDraw->selectAnimeMove(2, getSelectCursorPosLocal(), uVar12);
+                mpScrnDraw->selectAnimeMove(DUSK_IF_ELSE(3, 2), getSelectCursorPosLocal(), uVar12);
             } else {
                 if (getSelectCursorPosLocal() != 0xff) {
                     mpScrnDraw->selectAnimeMove(2, getSelectCursorPosLocal() + 1, uVar12);
@@ -874,7 +1154,9 @@ void dMsgObject_c::openProc() {
     }
     mpRenProc->setTextInitPos(mpScrnDraw->getTextBoxPosX(), mpScrnDraw->getTextBoxPosY());
     mpRenProc->setTextScale(mpScrnDraw->getTextBoxScaleX(), mpScrnDraw->getTextBoxScaleY());
+    IF_DUSK(startAnimation(*this, 2, field_0x16a - 1.0f, sVar7));
     if (field_0x16a >= sVar7) {
+        IF_DUSK(animations.frame.finish(field_0x16a));
         mpScrnDraw->fukiTrans(0.0f, 0.0f);
         for (int i = 0; i < 3; i++) {
             mpRenProc->setSelTextInitPos(i, mpScrnDraw->getSelTextBoxPosX(i),
@@ -894,25 +1176,44 @@ void dMsgObject_c::openProc() {
 }
 
 void dMsgObject_c::outnowProc() {
+    IF_DUSK(auto& animations = sMessageAnimations[this]);
     mpRefer->shiftCharCountBuffer();
-    if (isBookMessage() && field_0x16a > 0) {
+    if (isBookMessage() && field_0x16a DUSK_IF_ELSE(>, !=) 0) {
         field_0x16a--;
+#if TARGET_PC
+        startAnimation(*this, 6, field_0x16a + 1.0f, 0.0f);
+        if (field_0x16a == 0) {
+            animations.frame.finish(0.0f);
+        }
+#endif
         f32 alpha = (10 - field_0x16a) / 10.0f;
         mpScrnDraw->fontAlpha(alpha);
         mpOutFont->setAlphaRatio(alpha);
-        if (field_0x16a > 0) {
+        if (field_0x16a DUSK_IF_ELSE(>, !=) 0) {
             return;
         }
     }
     jmessage_tReference* pRef =
         (jmessage_tReference*)mpRenProc->getReference();
     if (pRef->getCharAllAlphaRate() < 1.0f) {
+        IF_DUSK(const f32 before = pRef->getCharAllAlphaRate());
         if (mDoCPd_c::getTrigA(0)) {
             pRef->setCharAllAlphaRate(1.0f);
         } else {
             pRef->addCharAllAlphaRate();
         }
         f32 alpha = pRef->getCharAllAlphaRate();
+#if TARGET_PC
+        if (animations.phase != 6) {
+            animations.frame.finish(field_0x16a);
+        }
+        animations.phase = 6;
+        if (alpha >= 1.0f) {
+            animations.alpha.finish(alpha);
+        } else {
+            animations.alpha.approach(before, 1.0f, alpha - before);
+        }
+#endif
         mpScrnDraw->setCharAlphaRate(alpha);
         mpOutFont->setAlphaRatio(alpha);
     } else if (mpRefer->isLightEnd()) {
@@ -960,17 +1261,20 @@ void dMsgObject_c::outnowProc() {
 }
 
 void dMsgObject_c::outwaitProc() {
+    IF_DUSK(auto& animations = sMessageAnimations[this]);
     jmessage_tReference* pRef =
         (jmessage_tReference*)mpRenProc->getReference();
     mpScrnDraw->arwAnimeMove();
     if (isBookMessage()) {
-        if (isSend() || field_0x16a > 0) {
+        if (isSend() || field_0x16a DUSK_IF_ELSE(>, !=) 0) {
             field_0x16a++;
+            IF_DUSK(startAnimation(*this, 5, field_0x16a - 1.0f, 10.0f));
             if (field_0x16a <= 10) {
                 f32 alpha = (10 - field_0x16a) / 10.0f;
                 mpScrnDraw->fontAlpha(alpha);
                 mpOutFont->setAlphaRatio(alpha);
                 if (field_0x16a >= 10) {
+                    IF_DUSK(animations.frame.finish(10.0f));
                     field_0x172++;
                     mpRefer->setPageNum(field_0x172);
                     mpCtrl->render_synchronize();
@@ -1019,14 +1323,18 @@ void dMsgObject_c::continueProc() {
         field_0x199 = 0;
         updateEquipBombInfoLocal();
         offAutoMessageFlagLocal();
-        setMessageIndex(field_0x100->msg_idx, field_0x100->field_0xf0, true);
+        setMessageIndex(field_0x100->msg_idx, field_0x100->select_msg_idx, true);
+#if TARGET_PC
+        sMessageAnimations.erase(this);
+        mpOutFont->setAlphaRatio(1.0f);
+#endif
         mpScrnDraw->fukiPosCalc(pRef->getFukiPosType());
-        strcpy(pRef->getTextPtr(), "");
-        strcpy(pRef->getTextSPtr(), "");
-        strcpy(pRef->getRubyPtr(), "");
+        SAFE_STRCPY(pRef->getTextPtr(), "");
+        SAFE_STRCPY(pRef->getTextSPtr(), "");
+        SAFE_STRCPY(pRef->getRubyPtr(), "");
         for (int i = 0; i < 3; i++) {
-            strcpy(pRef->getSelTextPtr(i), "");
-            strcpy(pRef->getSelRubyPtr(i), "");
+            SAFE_STRCPY(pRef->getSelTextPtr(i), "");
+            SAFE_STRCPY(pRef->getSelRubyPtr(i), "");
         }
         mpScrnDraw->arwAnimeInit();
         mpRenProc->setTextInitPos(mpScrnDraw->getTextBoxPosX(), mpScrnDraw->getTextBoxPosY());
@@ -1054,7 +1362,16 @@ void dMsgObject_c::selectProc() {
             dComIfGp_setAStatusForce(0x2a, 0);
         }
     }
-    if (mDoCPd_c::getTrigA(0)) {
+#if TARGET_PC
+    jmessage_tReference* pRef = (jmessage_tReference*)mpRenProc->getReference();
+    u8 pointerChoice = 0xFF;
+    bool pointerConfirm = dusk::menu_pointer::consume_dialog_click(pointerChoice) &&
+                          pointerChoice < pRef->getSelectNum();
+    if (pointerConfirm) {
+        pRef->setSelectPos(pointerChoice);
+    }
+#endif
+    if (mDoCPd_c::getTrigA(0) IF_DUSK(|| pointerConfirm)) {
         if (getSelectCursorPosLocal() != 0xff) {
             field_0x1a3 = 1;
         }
@@ -1076,13 +1393,13 @@ void dMsgObject_c::selectProc() {
         }
         field_0x1a3 = 2;
     }
-    jmessage_tReference* pRef = (jmessage_tReference*)mpRenProc->getReference();
+    IF_NOT_DUSK(jmessage_tReference* pRef = (jmessage_tReference*)mpRenProc->getReference());
     if (getStatusLocal() == 8) {
         if (isMidonaMessage() && field_0x1a3 != 0) {
             if (field_0x1a3 == 2 && getSelectCancelPos() == 3) {
                 iVar8 = true;
             } else {
-                while (!iVar8) {
+                IF_NOT_DUSK(while (!iVar8)) {
                     if (getSelectCursorPosLocal() != 0xff) {
                         iVar8 =
                             mpScrnDraw->selectAnimeMove(2, getSelectCursorPosLocal() + 1, uVar7);
@@ -1106,7 +1423,7 @@ void dMsgObject_c::selectProc() {
                 if (field_0x1a3 == 2 && getSelectCancelPos() == 4) {
                     iVar8 = true;
                 } else {
-                    while (!iVar8) {
+                    IF_NOT_DUSK(while (!iVar8)) {
                         iVar8 = mpScrnDraw->selectAnimeMove(3, getSelectCursorPosLocal(), uVar7);
                     }
                 }
@@ -1232,6 +1549,7 @@ void dMsgObject_c::finishProc() {
 
 void dMsgObject_c::endProc() {
     field_0x16a++;
+    IF_DUSK(auto& animations = sMessageAnimations[this]);
     s16 sVar4 = 5;
     if (isKanbanMessage() || isBookMessage()) {
         sVar4 = g_MsgObject_HIO_c.field_0x304;
@@ -1240,6 +1558,7 @@ void dMsgObject_c::endProc() {
     } else if (isBossMessage()) {
         sVar4 = g_MsgObject_HIO_c.mBossNameFadeOut;
     }
+    IF_DUSK(startAnimation(*this, 17, field_0x16a - 1.0f, sVar4));
     f32 dVar6 = (f32)field_0x16a / sVar4;
     mpScrnDraw->fukiAlpha(1.0f - dVar6);
     if (isBookMessage()) {
@@ -1247,6 +1566,7 @@ void dMsgObject_c::endProc() {
     }
     mpOutFont->setAlphaRatio(1.0f - dVar6);
     if (field_0x16a >= sVar4) {
+        IF_DUSK(animations.frame.finish(field_0x16a));
         mpScrnDraw->arwAnimeInit();
         mpScrnDraw->dotAnimeInit();
         if (mNoDemoFlag && !field_0x4d4) {
@@ -1256,7 +1576,7 @@ void dMsgObject_c::endProc() {
         }
         mMessageID = 0;
         field_0x158 = mMessageID;
-        field_0x15c = 1000;
+        mSelectMessageID = 1000;
         field_0x172 = 0;
         field_0x199 = 0;
         mpRefer->setPageNum(field_0x172);
@@ -1328,12 +1648,22 @@ void dMsgObject_c::talkStartInit() {
     field_0x19b = 0;
     bool bVar1 = false;
     if (mFukiKind != mpRefer->getFukiKind()) {
+#if TARGET_PC
+        // Safety check if MESSAGE_BOX_NOTICE is requested during a conversation
+        if (mpScrnDraw != NULL && mpRefer->getFukiKind() == 15 &&
+            dComIfGp_isHeapLockFlag() == 5) {
+            DuskLog.error("MESSAGE_BOX_NOTICE cannot be created during a conversation\n");
+        } else {
+#endif
         if (mpScrnDraw != NULL) {
             delete_screen(false);
             dVar19 = 1.0f;
             bVar1 = true;
         }
         mFukiKind = mpRefer->getFukiKind();
+#if TARGET_PC
+        }
+#endif
     }
     if (dComIfGp_isHeapLockFlag() == 8 ||
         (dComIfGp_isHeapLockFlag() == 5 && dMeter2Info_isFloatingMessageVisible() && !field_0x4cd))
@@ -1528,6 +1858,7 @@ u16 dMsgObject_c::getStatusLocal() {
 }
 
 void dMsgObject_c::delete_screen(bool param_1) {
+    IF_DUSK(sMessageAnimations.erase(this));
     if (mpOutFont != NULL) {
         JKR_DELETE(mpOutFont);
         mpOutFont = NULL;
@@ -1637,7 +1968,9 @@ void dMsgObject_c::readMessageGroupLocal(mDoDvdThd_mountXArchive_c** p_arcMount)
 #endif
 
     int msgGroup = dStage_stagInfo_GetMsgGroup(dComIfGp_getStage()->getStagInfo());
-    #if REGION_PAL
+#if TARGET_PC
+    snprintf(arcName, sizeof(arcName), "/res/%s/bmgres%d.arc", dusk::language::msg_folder(), msgGroup);
+#elif REGION_PAL
     switch (dComIfGs_getPalLanguage()) {
     case dSv_player_config_c::LANGUAGE_GERMAN:
         sprintf(arcName, "/res/Msgde/bmgres%d.arc", msgGroup);
@@ -1654,39 +1987,11 @@ void dMsgObject_c::readMessageGroupLocal(mDoDvdThd_mountXArchive_c** p_arcMount)
     default:
         sprintf(arcName, "/res/Msguk/bmgres%d.arc", msgGroup);
     }
-    #elif REGION_JPN
+#elif REGION_JPN
     sprintf(arcName, "/res/Msgjp/bmgres%d.arc", msgGroup);
-    #else
-#if TARGET_PC
-    // Original game UB
-
-    if (dusk::version::isRegionPal()) {
-        switch (dComIfGs_getPalLanguage()) {
-        case dSv_player_config_c::LANGUAGE_GERMAN:
-            snprintf(arcName, sizeof(arcName), "/res/Msgde/bmgres%d.arc", msgGroup);
-            break;
-        case dSv_player_config_c::LANGUAGE_FRENCH:
-            snprintf(arcName, sizeof(arcName), "/res/Msgfr/bmgres%d.arc", msgGroup);
-            break;
-        case dSv_player_config_c::LANGUAGE_SPANISH:
-            snprintf(arcName, sizeof(arcName), "/res/Msgsp/bmgres%d.arc", msgGroup);
-            break;
-        case dSv_player_config_c::LANGUAGE_ITALIAN:
-            snprintf(arcName, sizeof(arcName), "/res/Msgit/bmgres%d.arc", msgGroup);
-            break;
-        default:
-            snprintf(arcName, sizeof(arcName), "/res/Msguk/bmgres%d.arc", msgGroup);
-        }
-    } else if (dusk::version::isRegionJpn()) {
-        snprintf(arcName, sizeof(arcName), "/res/Msgjp/bmgres%d.arc", msgGroup);
-    } else {
-        snprintf(arcName, sizeof(arcName), "/res/Msgus/bmgres%d.arc", msgGroup);
-    }
-
 #else
     sprintf(arcName, "/res/Msgus/bmgres%d.arc", msgGroup);
 #endif
-    #endif
 
     *p_arcMount = mDoDvdThd_mountXArchive_c::create(arcName, 0, JKRArchive::MOUNT_MEM, NULL);
 
@@ -1699,7 +2004,11 @@ void dMsgObject_c::readMessageGroupLocal(mDoDvdThd_mountXArchive_c** p_arcMount)
 
 void dMsgObject_c::changeFlowGroupLocal(s32 param_0) {
     mFlowChk = 1;
+#if TARGET_PC
+    changeGroup(param_0 >= 3000 && param_0 < dusk::flow::kCustomNodeMin ? (s16)0 : s_groupID);
+#else
     changeGroup(param_0 >= 3000 ? (s16)0 : s_groupID);
+#endif
 }
 
 void dMsgObject_c::demoMessageGroupLocal() {
@@ -1713,32 +2022,35 @@ void dMsgObject_c::endFlowGroupLocal() {
 
 void dMsgObject_c::changeGroupLocal(s16 param_1) {
     JKRHeap* prevHeap = mDoExt_setCurrentHeap(dComIfGp_getMsgExpHeap());
-    if (field_0x16c != param_1) {
+    if (mCurrentGroupID != param_1) {
         if (mFlowChk != 0) {
             JUT_ASSERT(3688, mFlowChk != 2);
             mFlowChk = 2;
         }
         OS_REPORT("group change =====> %d\n", param_1);
         if (param_1 >= 1) {
-            OS_REPORT("bmg data change =====> %d --> %d\n", field_0x16c, param_1);
-            if (field_0x16c == 0) {
+            OS_REPORT("bmg data change =====> %d --> %d\n", mCurrentGroupID, param_1);
+            if (mCurrentGroupID == 0) {
                 field_0x19d = 1;
             }
             mpMsgDt = dMeter2Info_getStageMsgResource();
         } else {
             mpMsgDt = mpMsgRes;
         }
-        if (field_0x16c >= 0) {
+        if (mCurrentGroupID >= 0) {
             field_0x124->parse(mpMsgDt, 0x80);
         }
-        field_0x16c = param_1;
+#if TARGET_PC
+        dusk::flow::bind_resource(mpMsgDt, static_cast<u16>(param_1));
+#endif
+        mCurrentGroupID = param_1;
     }
     mDoExt_setCurrentHeap(prevHeap);
 }
 
 bool dMsgObject_c::getStringLocal(u32 param_1, J2DTextBox* param_2, J2DTextBox* param_3,
-                                  JUTFont* param_4, COutFont_c* param_5, char* param_6,
-                                  char* param_7, char* param_8, s16* param_9) {
+                                  JUTFont* param_4, COutFont_c* param_5, TEXT_SPAN param_6,
+                                  TEXT_SPAN param_7, TEXT_SPAN param_8, s16* param_9) {
     if (field_0x4cd == 0) {
         if (getStatusLocal() == 1) {
             s16 groupID = getMessageGroup(param_1);
@@ -1781,13 +2093,13 @@ bool dMsgObject_c::getStringLocal(u32 param_1, J2DTextBox* param_2, J2DTextBox* 
                 *param_9 = mpRefer->getCharSoundInfo().field_0x40e;
             }
             if (param_6 != NULL) {
-                strcpy(param_6, pRef->getTextPtr());
+                SAFE_STRCPY(param_6, pRef->getTextPtr());
             }
             if (param_7 != NULL) {
-                strcpy(param_7, pRef->getRubyPtr());
+                SAFE_STRCPY(param_7, pRef->getRubyPtr());
             }
             if (param_8 != NULL) {
-                strcpy(param_8, pRef->getTextSPtr());
+                SAFE_STRCPY(param_8, pRef->getTextSPtr());
             }
             mpCtrl->reset();
             mpCtrl->resetResourceCache();
@@ -2309,8 +2621,8 @@ void dMsgObject_c::changeGroup(s16 param_0) {
 }
 
 bool dMsgObject_c::getString(u32 param_0, J2DTextBox* param_1, J2DTextBox* param_2,
-                             JUTFont* param_3, COutFont_c* param_4, char* param_5, char* param_6,
-                             char* param_7, s16* param_8) {
+                             JUTFont* param_3, COutFont_c* param_4, TEXT_SPAN param_5, TEXT_SPAN param_6,
+                             TEXT_SPAN param_7, s16* param_8) {
     return dMsgObject_getMsgObjectClass()->getStringLocal(
         param_0, param_1, param_2, param_3, param_4, param_5, param_6, param_7, param_8);
 }
@@ -2555,7 +2867,7 @@ static leafdraw_method_class l_dMsgObject_Method = {
     (process_method_func)dMsgObject_Draw,
 };
 
-msg_process_profile_definition g_profile_MSG_OBJECT = {
+DUSK_PROFILE msg_process_profile_definition DUSK_CONST g_profile_MSG_OBJECT = {
     /* Layer ID    */ fpcLy_CURRENT_e,
     /* List ID     */ 12,
     /* List Prio   */ fpcPi_CURRENT_e,

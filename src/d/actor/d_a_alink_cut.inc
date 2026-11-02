@@ -165,6 +165,12 @@ BOOL daAlink_c::checkCutTypeNoBlur() const {
 }
 
 bool daAlink_c::checkCutTurnInput() const {
+    #if TARGET_PC
+    if (mDoCPd_c::getHoldR(PAD_1) && dusk::getSettings().game.easyQuickSpin) {
+        return true;
+    }
+    #endif
+
     return 0xF800 < abs(field_0x3180);
 }
 
@@ -817,11 +823,16 @@ BOOL daAlink_c::checkDownAttackState() {
 }
 
 BOOL daAlink_c::checkCutLargeTurnState() const {
-    #if TARGET_PC
-    if (dusk::getSettings().game.alwaysGreatspin) {
+#if TARGET_PC
+    const auto alwaysGreatspinMode = dusk::getSettings().game.alwaysGreatspin.getValue();
+    if (alwaysGreatspinMode == dusk::AlwaysGreatspinMode::ALWAYS) {
         return TRUE;
     }
-    #endif
+    if (alwaysGreatspinMode == dusk::AlwaysGreatspinMode::AFTER_SKILL && 
+        (dComIfGs_isEventBit(dSv_event_flag_c::F_0344) || checkNoResetFlg3(FLG3_TRANING_CUT_LARGE_TURN))) {
+        return TRUE;
+    }
+#endif
 
     return ((dComIfGs_isEventBit(dSv_event_flag_c::F_0344) || checkNoResetFlg3(FLG3_TRANING_CUT_LARGE_TURN))
             && dComIfGs_getLife() == dComIfGs_getMaxLifeGauge()
@@ -1164,6 +1175,10 @@ int daAlink_c::procCutFinishInit(int i_type) {
     const daAlinkHIO_cutFinish_c1* cutData;
     const daAlink_cutParamTbl* cutParams = &cutParamTable[i_type];
     BOOL is_proc_frontRoll = mProcID == PROC_FRONT_ROLL;
+
+#if TARGET_PC
+    mIsRollstab = (is_proc_frontRoll != FALSE) && (i_type == CUT_FINISH_PARAM_STAB);
+#endif
 
     commonProcInit(PROC_CUT_FINISH);
     setCutType(cutParams->m_cutType);

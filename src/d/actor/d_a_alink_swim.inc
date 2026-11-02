@@ -216,7 +216,7 @@ void daAlink_c::setSpeedAndAngleSwim() {
             if (checkEventRun()) {
                 var_r28 = mMoveAngle;
             } else {
-                var_r28 = shape_angle.y + (16384.0f * cM_ssin(mStickAngle));
+                var_r28 = shape_angle.y + (16384.0f * cM_ssin(mStickAngle) IF_DUSK(* (dusk::getSettings().game.invertAirSwimX ? -1.0f : 1.0f)));
             }
 
             cLib_addCalcAngleS(&shape_angle.y, var_r28, mpHIO->mSwim.m.mUnderwaterTurnRate, mpHIO->mSwim.m.mUnderwaterMaxTurn, mpHIO->mSwim.m.mUnderwaterMinTurn);
@@ -660,9 +660,11 @@ void daAlink_c::setSwimMoveAnime() {
         field_0x3478 = mpHIO->mSwim.m.mUnderwaterMinAnmSpeed;
         field_0x347c = mpHIO->mSwim.m.mUnderwaterMaxAnmSpeed;
 
+        IF_DUSK(const bool holdToMash = DUSK_IF_ELSE(dusk::getSettings().game.holdToMash, false);)
+
         if (mMaxSpeed < mpHIO->mSwim.m.mUnderwaterMaxSpeed) {
             mMaxSpeed = mpHIO->mSwim.m.mUnderwaterMaxSpeed;
-        } else if (doTrigger()) {
+        } else if (holdToMash ? doButton() : doTrigger()) {
             mMaxSpeed += 0.75f;
             if (mMaxSpeed > temp_f29) {
                 mMaxSpeed = temp_f29;
@@ -835,7 +837,7 @@ void daAlink_c::setSwimMoveAnime() {
         } else {
             s16 var_r24;
             if (checkInputOnR() && !checkEventRun()) {
-                var_r24 = 13653.0f * cM_scos(mStickAngle);
+                var_r24 = 13653.0f * cM_scos(mStickAngle) IF_DUSK(* (dusk::getSettings().game.invertAirSwimY ? -1.0f : 1.0f));
             } else {
                 var_r24 = 0;
             }

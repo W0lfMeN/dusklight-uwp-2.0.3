@@ -6,6 +6,10 @@
 #include "d/d_select_cursor.h"
 #include "global.h"
 
+#if TARGET_PC
+#include "dusk/interp/user_interface.h"
+#endif
+
 struct map_icon_size_t {
     f32 size_x;
     f32 size_y;
@@ -410,9 +414,14 @@ void dMenuMapCommon_c::drawIcon(f32 i_posX, f32 i_posY, f32 param_3, f32 param_4
                 }
 
                 f32 pos_x = i_posX + (icon_pos_x - (icon_size_x / 2));
+                bool r4 = false;
                 #if TARGET_PC
                 if (dusk::getSettings().game.enableMirrorMode) {
                     pos_x = getMirrorCenterPosX(i_posX + (icon_pos_x - (icon_size_x / 2)), icon_size_x / 2);
+                }
+
+                if(mIconInfo[info_idx].icon_no == ICON_GOLD_WOLF_e) {
+                    r4 = true;
                 }
                 #endif
 
@@ -422,7 +431,7 @@ void dMenuMapCommon_c::drawIcon(f32 i_posX, f32 i_posY, f32 param_3, f32 param_4
                 if (mIconInfo[info_idx].icon_no == ICON_LIGHT_DROP_e) {
                     mLightDropPic->draw((pos_x + (icon_size_x / 2)) - (var_f29 / 2),
                                         ((icon_size_y / 2) + (i_posY + (icon_pos_y - icon_size_y / 2))) - (var_f28 / 2),
-                                        var_f29, var_f28, false, false, false);
+                                        var_f29, var_f28, r4, false, false);
                 }
             }
         }
@@ -579,10 +588,16 @@ void dMenuMapCommon_c::setBlendRatio(u8 i_iconNo, f32 param_2, f32 param_3) {
 }
 
 void dMenuMapCommon_c::blinkMove(s16 param_1) {
+#if TARGET_PC
+    f32 phase = mBlinkTimer + 15.0f;
+    dusk::vdt::advance_looping_frame(phase, 1.0f, std::max(0, (int)param_1) + 15.0f);
+    mBlinkTimer = phase - 15.0f;
+#else
     mBlinkTimer++;
     if (mBlinkTimer >= param_1) {
         S16_SUB(mBlinkTimer, param_1 + 15);
     }
+#endif
 
     if (mBlinkTimer < 0) {
         mBlinkAlpha = 1.0f;
@@ -605,10 +620,20 @@ void dMenuMapCommon_c::moveLightDropAnime() {
     u8 flash_start_alpha = g_fmapHIO.mMapIconHIO.mLightDropFlashStartAlphaOut[bVar6];
     u8 flash_end_alpha = g_fmapHIO.mMapIconHIO.mLightDropFlashEndAlphaOut[bVar6];
 
+#if TARGET_PC
+    if (flash_frame_num <= 0) {
+        mLightDropFlashTimer = 0.0f;
+        _c80 = flash_start_alpha;
+        _c7c = flash_start_scale;
+        return;
+    }
+    dusk::vdt::advance_looping_frame(mLightDropFlashTimer, 1.0f, flash_frame_num);
+#else
     mLightDropFlashTimer++;
     if (mLightDropFlashTimer >= flash_frame_num) {
         mLightDropFlashTimer -= flash_frame_num;
     }
+#endif
 
     f32 fVar7;
     if (mLightDropFlashTimer <= flash_frame_num / 2.0f) {
@@ -747,3 +772,113 @@ void dMenuMapCommon_c::debugIcon() {
         setIconInfo(ICON_LV8_WARP_e, pos_x, pos_y, 0.0f, scale, 1.0f, 1);
     }
 }
+
+#if TARGET_PC
+static constexpr struct {
+    std::string_view stagename;
+    u8 switch_no;
+    s8 region_id;
+    u8 save_id;
+} l_poeInfo[] = {
+    // Dungeons
+    {"D_MN06", 0x19, -1, 0x15},
+    {"D_MN06", 0x18, -1, 0x15},
+    {"D_MN07", 0x54, -1, 0x16},
+    {"D_MN07", 0x55, -1, 0x16},
+    {"D_MN10", 0x1E, -1, 0x13},
+    {"D_MN10", 0x1F, -1, 0x13},
+    {"D_MN10", 0x20, -1, 0x13},
+    {"D_MN10", 0x21, -1, 0x13},
+    {"D_MN11", 0x72, -1, 0x14},
+    {"D_MN11", 0x15, -1, 0x14},
+    {"D_MN11", 0x7F, -1, 0x14},
+
+    // Sub-Dungeons
+    {"D_SB01", 0x45, 4, 0x19},
+    {"D_SB01", 0x46, 4, 0x19},
+    {"D_SB01", 0x47, 4, 0x19},
+    {"D_SB02", 0x60, 2, 0x19},
+    {"D_SB03", 0x5E, 3, 0x1A},
+    {"D_SB03", 0x5F, 3, 0x1A},
+    {"D_SB03", 0x5D, 3, 0x1A},
+    {"D_SB05", 0xA, 3, 0x1B},
+    {"D_SB05", 0xB, 3, 0x1B},
+    {"D_SB07", 0xF, 4, 0x1B},
+    {"D_SB07", 0x10, 4, 0x1B},
+
+    // Field Spots
+    {"F_SP108", 0x5D, 1, 0x2},
+    {"F_SP109", 0x5E, 2, 0x3},
+    {"F_SP109", 0x5F, 2, 0x3},
+    {"F_SP110", 0x59, 2, 0x3},
+    {"F_SP111", 0x57, 2, 0x3},
+    {"F_SP111", 0x58, 2, 0x3},
+    {"F_SP113", 0x49, 3, 0x4},
+    {"F_SP113", 0x4A, 3, 0x4},
+    {"F_SP114", 0x7C, 5, 0x8},
+    {"F_SP114", 0x7D, 5, 0x8},
+    {"F_SP114", 0x7B, 5, 0x8},
+    {"F_SP114", 0x7E, 5, 0x8},
+    {"F_SP114", 0x7F, 5, 0x8},
+    {"F_SP115", 0x46, 3, 0x4},
+    {"F_SP115", 0x47, 3, 0x4},
+    {"F_SP115", 0x4B, 3, 0x4},
+    {"F_SP115", 0x4C, 3, 0x4},
+    {"F_SP115", 0x4D, 3, 0x4},
+    {"F_SP117", 0xF, 1, 0x7},
+    {"F_SP117", 0x1E, 1, 0x7},
+    {"F_SP117", 0x10, 1, 0x7},
+    {"F_SP117", 0x11, 1, 0x7},
+    {"F_SP118", 0x78, 4, 0xA},
+    {"F_SP118", 0x5A, 4, 0xA},
+    {"F_SP121", 0x3A, 2, 0x6},
+    {"F_SP121", 0x39, 1, 0x6},
+    {"F_SP121", 0x33, 3, 0x6},
+    {"F_SP121", 0x3B, 3, 0x6},
+    {"F_SP122", 0x49, 3, 0x6},
+    {"F_SP122", 0x30, 3, 0x6},
+    {"F_SP122", 0x47, 3, 0x6},
+    {"F_SP124", 0x5B, 4, 0xA},
+    {"F_SP124", 0x5C, 4, 0xA},
+    {"F_SP124", 0x5D, 4, 0xA},
+    {"F_SP124", 0x33, 4, 0xA},
+    {"F_SP126", 0x48, 3, 0x4},
+    {"F_SP128", 0x40, 2, 0x3},
+    {"R_SP160", 0x1F, 3, 0x9},
+};
+
+void dMenuMapCommon_c::getDmapPoeCount(const std::string& stageName, int& nowCount, int& totalCount) {
+    nowCount = 0;
+    totalCount = 0;
+
+    for (const auto& i : l_poeInfo) {
+        if (stageName == i.stagename) {
+            if (dStage_stagInfo_GetSaveTbl(dComIfGp_getStageStagInfo()) == i.save_id) {
+                nowCount += dComIfGs_isSwitch(i.switch_no, -1);
+            } else {
+                nowCount += dComIfGs_isSaveSwitch(i.save_id, i.switch_no);
+            }
+            totalCount++;
+        }
+    }
+}
+
+void dMenuMapCommon_c::getFmapPoeCount(const int regionNo, int& nowCount, int& totalCount) {
+    nowCount = 0;
+    totalCount = 0;
+
+    if (regionNo < 0)
+        return;
+
+    for (const auto& i : l_poeInfo) {
+        if (regionNo == i.region_id) {
+            if (dStage_stagInfo_GetSaveTbl(dComIfGp_getStageStagInfo()) == i.save_id) {
+                nowCount += dComIfGs_isSwitch(i.switch_no, -1);
+            } else {
+                nowCount += dComIfGs_isSaveSwitch(i.save_id, i.switch_no);
+            }
+            totalCount++;
+        }
+    }
+}
+#endif

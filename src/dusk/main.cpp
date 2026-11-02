@@ -1,12 +1,16 @@
 #if _WIN32
 #define WINDOWS_LEAN_AND_MEAN
 #include <Windows.h>
+#if !defined(_UWP)
 #include <shellapi.h>
+#endif
 #endif
 
 #include <aurora/main.h>
+#include "d/actor/d_a_movie_player.h"
 #include "dusk/main.h"
 #include "dusk/io.hpp"
+#include <borealis/io.hpp>
 
 #include <algorithm>
 #include <array>
@@ -36,7 +40,7 @@ bool RestartProcess(int argc, char* argv[]) {
     (void)argc;
     (void)argv;
     return false;
-#elif defined(_WIN32)
+#elif _WIN32
     std::wstring commandLine = GetCommandLineW();
     STARTUPINFOW startupInfo{};
     startupInfo.cb = sizeof(startupInfo);
@@ -92,7 +96,7 @@ bool RestartProcess(int argc, char* argv[]) {
 
     std::vector<std::string> args;
     args.reserve(static_cast<size_t>(std::max(argc, 1)));
-    args.push_back(dusk::io::fs_path_to_string(executablePath));
+    args.push_back(borealis::io::fs_path_to_string(executablePath));
     for (int i = 1; i < argc; ++i) {
         args.emplace_back(argv[i] != nullptr ? argv[i] : "");
     }
@@ -110,7 +114,7 @@ bool RestartProcess(int argc, char* argv[]) {
 #endif
 }
 
-#if _WIN32
+#if _WIN32 && !defined(_UWP)
 bool ShouldShowWindowsConsole(int argc, char* argv[]) {
     if (const auto* env = std::getenv("DUSK_CONSOLE")) {
         if (env[0] != '\0' && env[0] != '0') {
@@ -158,9 +162,7 @@ void WindowsSetupConsole(bool showConsole) {
 }
 
 int DuskMain(int argc, char* argv[]) {
-#if !defined(_UWP)
     WindowsSetupConsole(ShouldShowWindowsConsole(argc, argv));
-#endif
     const int result = game_main(argc, argv);
     if constexpr (dusk::SupportsProcessRestart) {
         if (dusk::RestartRequested) {
@@ -221,15 +223,16 @@ int DuskMain(int argc, char* argv[]) {
 
 }  // namespace
 
-#ifdef _UWP
+#if defined(_UWP)
+// platforms/uwp/main.cpp owns the entry point and runs this as SDL_main through SDL_RunApp.
 #define SDL_MAIN_EXPORTED
-#include "SDL3/SDL_main.h"
+#include <SDL3/SDL_main.h>
 #endif
 int main(int argc, char* argv[]) {
     return DuskMain(argc, argv);
 }
 
-#if _WIN32 && !_UWP
+#if _WIN32 && !defined(_UWP)
 int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR, int) {
     return RunWindowsGuiEntryPoint();
 }

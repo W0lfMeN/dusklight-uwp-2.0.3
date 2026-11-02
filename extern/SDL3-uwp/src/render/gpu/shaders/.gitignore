@@ -1,0 +1,6 @@
+*.hlsl
+*.metal
+*.spv
+*.tmp.h
+# Dusklight UWP: SDL3-uwp tracks the .hlsl sources despite the rule above
+!*.hlsl

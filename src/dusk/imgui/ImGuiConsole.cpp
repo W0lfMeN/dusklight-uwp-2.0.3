@@ -1,33 +1,32 @@
-#include <algorithm>
-#include <array>
-#include <numeric>
-#include <string_view>
-#include <chrono>
-
 #define IMGUI_DEFINE_MATH_OPERATORS
-#include "imgui.h"
-#include <imgui_internal.h>
-
-#include "fmt/format.h"
 #include "ImGuiConsole.hpp"
+
 #include "ImGuiEngine.hpp"
-#include "JSystem/JUtility/JUTGamePad.h"
-#include "SDL3/SDL_mouse.h"
+
 #include "dusk/action_bindings.h"
-#include "dusk/audio/DuskAudioSystem.h"
 #include "dusk/config.hpp"
 #include "dusk/data.hpp"
-#include "dusk/dusk.h"
-#include "dusk/frame_interpolation.h"
+#include "dusk/game_mode.hpp"
 #include "dusk/livesplit.h"
 #include "dusk/main.h"
+#include "dusk/presentation.hpp"
 #include "dusk/settings.h"
 #include "dusk/ui/ui.hpp"
+
 #include "f_pc/f_pc_manager.h"
 #include "f_pc/f_pc_name.h"
-#include "m_Do/m_Do_controller_pad.h"
-#include "m_Do/m_Do_main.h"
-#include "tracy/Tracy.hpp"
+
+#include "JSystem/JUtility/JUTGamePad.h"
+
+#include <aurora/aurora.h>
+#include <fmt/format.h>
+#include <imgui.h>
+#include <imgui_internal.h>
+#include <tracy/Tracy.hpp>
+
+#include <array>
+#include <chrono>
+#include <string_view>
 
 #if _WIN32
 #define NOMINMAX
@@ -38,6 +37,8 @@ using namespace std::string_literals;
 using namespace std::string_view_literals;
 
 namespace {
+constexpr float kTurboTimeScale = 4.f;
+
 ImGuiWindow* FindDragScrollWindow(ImGuiWindow* window) {
     while (window != nullptr) {
         const bool canScrollX = window->ScrollMax.x > 0.0f;
@@ -59,10 +60,6 @@ namespace dusk {
     void ImGuiStringViewText(std::string_view text) {
         // begin()/end() do not work on MSVC
         ImGui::TextUnformatted(text.data(), text.data() + text.size());
-    }
-
-    void DuskToast(std::string_view message, float duration) {
-        g_imguiConsole.AddToast(message, duration);
     }
 
     void ImGuiTextCenter(std::string_view text) {
@@ -240,15 +237,30 @@ namespace dusk {
     }
 
     void ImGuiConsole::UpdateSettings() {
-        getTransientSettings().skipFrameRateLimit = getSettings().game.enableTurboKeybind &&
-            (ImGui::IsKeyDown(ImGuiKey_Tab) || getActionBindHoldAnyPort(ActionBinds::TURBO_SPEED_BUTTON));
+        static bool previousTurboActive = false;
+        static bool previousSlowActive = false;
+        static float previousTimeScale = 1.0f;
 
-        if (dusk::frame_interp::get_ui_tick_pending() && mDoMain::developmentMode == 1 && (mDoCPd_c::getHold(PAD_1) & (PAD_TRIGGER_R | PAD_TRIGGER_L)) == (PAD_TRIGGER_R | PAD_TRIGGER_L) && mDoCPd_c::getTrigY(PAD_1)) {
-            getTransientSettings().moveLinkActive = !getTransientSettings().moveLinkActive;
+        const bool turboBound = isActionBoundAnyPort(ActionBinds::TURBO_SPEED_BUTTON);
+        const bool turboActive =
+            getSettings().game.enableTurboKeybind &&
+            (turboBound ? getActionBindHoldAnyPort(ActionBinds::TURBO_SPEED_BUTTON) :
+                          ImGui::IsKeyDown(ImGuiKey_Tab));
+        const bool slowDown = turboActive && ImGui::GetIO().KeyShift;
+        if (turboActive != previousTurboActive) {
+            getTransientSettings().turboMode = turboActive;
+            presentation::update_frame_rate_preference();
+            if (turboActive) {
+                previousTimeScale = aurora_get_timescale();
+                aurora_set_timescale(slowDown ? 1.f / kTurboTimeScale : kTurboTimeScale);
+            } else {
+                aurora_set_timescale(previousTimeScale);
+            }
+        } else if (turboActive && slowDown != previousSlowActive) {
+            aurora_set_timescale(slowDown ? 1.f / kTurboTimeScale : kTurboTimeScale);
         }
-        if (mDoMain::developmentMode != 1) {
-            getTransientSettings().moveLinkActive = false;
-        }
+        previousTurboActive = turboActive;
+        previousSlowActive = slowDown;
     }
 
     void ImGuiConsole::PreDraw() {
@@ -256,16 +268,16 @@ namespace dusk {
 
         UpdateSettings();
 
-#ifndef _UWP
+#if !defined(_UWP)
         if (ImGui::IsKeyPressed(ImGuiKey_F11)) {
             getSettings().video.enableFullscreen.setValue(!getSettings().video.enableFullscreen);
             VISetWindowFullscreen(getSettings().video.enableFullscreen);
-            config::Save();
+            config::save();
         }
 #endif
 
         if (getSettings().game.enableResetKeybind && ImGui::GetIO().KeyCtrl &&
-            ImGui::IsKeyPressed(ImGuiKey_R) && !fpcM_SearchByName(fpcNm_LOGO_SCENE_e))
+            ImGui::IsKeyReleased(ImGuiKey_R) && !fpcM_SearchByName(fpcNm_LOGO_SCENE_e))
         {
             JUTGamePad::C3ButtonReset::sResetSwitchPushing = true;
         }
@@ -277,7 +289,7 @@ namespace dusk {
                 m_isHidden = true;
             }
         }
-        
+
         bool showMenu = !m_isHidden;
 
         // The menu bar renders with ImGuiCol_WindowBg behind it. We just want ImGuiCol_MenuBarBg,
@@ -292,7 +304,7 @@ namespace dusk {
 
         if (dusk::IsGameLaunched && !m_isLaunchInitialized) {
             m_isLaunchInitialized = true;
-            if (getSettings().game.speedrunMode && getSettings().game.liveSplitEnabled) {
+            if (dusk::speedrun::isActive() && getSettings().game.liveSplitEnabled) {
                 dusk::speedrun::connectLiveSplit();
             }
         }
@@ -324,8 +336,8 @@ namespace dusk {
             }
             ImGui::PushFont(ImGuiEngine::fontLarge);
             ImGuiTextCenter("Failed to initialize any graphics backend.");
-            ImGuiTextCenter("\nYour system may be misconfigured, or your hardware may not support the required versions of any of the available backends.");
-            ImGuiTextCenter("\nA clean reinstall of Dusklight may help. For further assistance, please visit #tech-support on the Twilit Realm Discord server.");
+            ImGuiTextCenter("\nDusklight requires at least Vulkan 1.1 or Direct3D 12.");
+            ImGuiTextCenter("\nTry updating your operating system and GPU drivers.");
             const auto& style = ImGui::GetStyle();
             const auto retrySize = ImGui::CalcTextSize("Retry (Auto backend)");
             const auto quitSize = ImGui::CalcTextSize("Quit");
@@ -343,7 +355,7 @@ namespace dusk {
             if constexpr (SupportsProcessRestart) {
                 if (ImGui::Button("Retry (Auto backend)")) {
                     getSettings().backend.graphicsBackend.setValue("auto");
-                    config::Save();
+                    config::save();
                     RestartRequested = true;
                     IsRunning = false;
                 }
@@ -364,7 +376,7 @@ namespace dusk {
 
         m_menuTools.ShowInputViewer();
 
-        if (dusk::IsGameLaunched && !dusk::getSettings().game.speedrunMode) {
+        if (dusk::IsGameLaunched && !dusk::speedrun::isActive()) {
             m_menuTools.ShowDebugOverlay();
             m_menuTools.ShowCameraOverlay();
             m_menuTools.ShowProcessManager();
@@ -378,27 +390,10 @@ namespace dusk {
             m_menuTools.ShowActorSpawner();
         }
 
-        // Hide mouse cursor if the F1 menu is not open and the cursor is idle for 3 seconds.
-        if (dusk::getSettings().game.gyroMode.getValue() != GyroMode::Mouse)
-        {
-            ImGuiIO& io = ImGui::GetIO();
-            if (io.MouseDelta.x != 0.0f || io.MouseDelta.y != 0.0f) {
-                mouseHideTimer = 0.0f;
-                ImGui::GetIO().ConfigFlags &= ~ImGuiConfigFlags_NoMouseCursorChange;  // Imgui will re-show cursor.
-            } else if (mouseHideTimer <= 3.0f) {
-                mouseHideTimer += ImGui::GetIO().DeltaTime;
-            } else {
-                ImGui::GetIO().ConfigFlags |= ImGuiConfigFlags_NoMouseCursorChange;
-                SDL_HideCursor();
-            }
-        }
-
-        ShowToasts();
     }
 
     void ImGuiConsole::PostDraw() {
         m_menuTools.afterDraw();
-        ShowPipelineProgress();
     }
 
     void ImGuiConsole::UpdateDragScroll() {
@@ -547,75 +542,4 @@ namespace dusk {
         return false;
     }
 
-    void ImGuiConsole::AddToast(std::string_view message, float duration) {
-        m_toasts.emplace_back(std::string(message), duration);
-    }
-
-    void ImGuiConsole::ShowToasts() {
-        if (m_toasts.empty()) {
-            return;
-        }
-        auto& toast = m_toasts.front();
-        const float dt = ImGui::GetIO().DeltaTime;
-        toast.remain -= dt;
-        toast.current += dt;
-
-        const ImGuiViewport* viewport = ImGui::GetMainViewport();
-        const ImVec2 workPos = viewport->WorkPos;
-        const ImVec2 workSize = viewport->WorkSize;
-        constexpr float padding = 10.0f;
-        const ImVec2 windowPos{workPos.x + workSize.x / 2, workPos.y + workSize.y - padding};
-        ImGui::SetNextWindowPos(windowPos, ImGuiCond_Always, ImVec2{0.5f, 1.f});
-
-        const float alpha = std::min({toast.remain, toast.current, 1.f});
-        ImGui::SetNextWindowBgAlpha(alpha * 0.65f);
-        ImVec4 textColor = ImGui::GetStyleColorVec4(ImGuiCol_Text);
-        textColor.w *= alpha;
-        ImVec4 borderColor = ImGui::GetStyleColorVec4(ImGuiCol_Border);
-        borderColor.w *= alpha;
-        ImGui::PushStyleColor(ImGuiCol_Text, textColor);
-        ImGui::PushStyleColor(ImGuiCol_Border, borderColor);
-        if (ImGui::Begin("Toast", nullptr,
-                         ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_AlwaysAutoResize |
-                             ImGuiWindowFlags_NoSavedSettings |
-                             ImGuiWindowFlags_NoFocusOnAppearing | ImGuiWindowFlags_NoNav |
-                             ImGuiWindowFlags_NoMove))
-        {
-            ImGuiStringViewText(toast.message);
-        }
-        ImGui::End();
-        ImGui::PopStyleColor(2);
-
-        if (toast.remain <= 0.f) {
-            m_toasts.pop_front();
-        }
-    }
-
-    void ImGuiConsole::ShowPipelineProgress() {
-        const auto* stats = aurora_get_stats();
-        const u32 queuedPipelines = stats->queuedPipelines;
-        if (queuedPipelines == 0 || !getSettings().backend.showPipelineCompilation) {
-            return;
-        }
-        const u32 createdPipelines = stats->createdPipelines;
-        const u32 totalPipelines = queuedPipelines + createdPipelines;
-
-        const auto* viewport = ImGui::GetMainViewport();
-        const auto padding = viewport->WorkPos.y + 10.f;
-        const auto halfWidth = viewport->GetWorkCenter().x;
-        ImGui::SetNextWindowPos(ImVec2{halfWidth, padding}, ImGuiCond_Always, ImVec2{0.5f, 0.f});
-        ImGui::SetNextWindowSize(ImVec2{halfWidth, 0.f}, ImGuiCond_Always);
-        ImGui::SetNextWindowBgAlpha(0.65f);
-        ImGui::Begin("Pipelines", nullptr,
-                     ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_NoInputs | ImGuiWindowFlags_NoMove |
-                         ImGuiWindowFlags_NoSavedSettings | ImGuiWindowFlags_NoFocusOnAppearing);
-        const auto percent = static_cast<float>(createdPipelines) / static_cast<float>(totalPipelines);
-        const auto progressStr = fmt::format("Processing pipelines: {} / {}", createdPipelines, totalPipelines);
-        const auto textSize = ImGui::CalcTextSize(progressStr.data(), progressStr.data() + progressStr.size());
-        ImGui::NewLine();
-        ImGui::SameLine(ImGui::GetWindowWidth() / 2.f - textSize.x + textSize.x / 2.f);
-        ImGuiStringViewText(progressStr);
-        ImGui::ProgressBar(percent);
-        ImGui::End();
-    }
 }

@@ -9,7 +9,9 @@
 #include <os.h>
 #include <stdint.h>
 
-JASHeap* JASWaveArcLoader::sAramHeap;
+#include "helpers/string.hpp"
+
+DUSK_GAME_DATA JASHeap* JASWaveArcLoader::sAramHeap;
 
 JASHeap* JASWaveArcLoader::getRootHeap() {
     if (JASWaveArcLoader::sAramHeap) {
@@ -18,11 +20,11 @@ JASHeap* JASWaveArcLoader::getRootHeap() {
     return JASKernel::getAramHeap();
 }
 
-char JASWaveArcLoader::sCurrentDir[DIR_MAX] = "/AudioRes/Waves/";
+DUSK_GAME_DATA char JASWaveArcLoader::sCurrentDir[DIR_MAX] = "/AudioRes/Waves/";
 
 void JASWaveArcLoader::setCurrentDir(char const* dir) {
     JUT_ASSERT(40, std::strlen(dir) < DIR_MAX - 1);
-    strcpy(sCurrentDir, dir);
+    SAFE_STRCPY(sCurrentDir, dir);
     u32 len = strlen(sCurrentDir);
     if (sCurrentDir[len - 1] != '/') {
         JUT_ASSERT(45, len + 1 < DIR_MAX);
@@ -36,7 +38,7 @@ char* JASWaveArcLoader::getCurrentDir() {
 }
 
 JASWaveArc::JASWaveArc() : mHeap(this) {
-    _48 = 0;
+    mCurrentlyLoaded = 0;
     mStatus = 0;
     mEntryNum = -1;
     mFileLength = 0;
@@ -55,7 +57,7 @@ bool JASWaveArc::loadSetup(u32 param_0) {
     if (mStatus != 1) {
         return false;
     }
-    _48 = 1;
+    mCurrentlyLoaded = 1;
     mStatus = 2;
     return true;
 }
@@ -69,7 +71,7 @@ bool JASWaveArc::eraseSetup() {
         mStatus = 0;
         return false;
     }
-    _48 = 0;
+    mCurrentlyLoaded = 0;
     mStatus = 0;
     return true;
 }
@@ -89,7 +91,7 @@ void JASWaveArc::loadToAramCallback(void* this_) {
 
 bool JASWaveArc::sendLoadCmd() {
     JASMutexLock mutexLock(&mMutex);
-    _48 = 0;
+    mCurrentlyLoaded = 0;
     mStatus = 1;
     loadToAramCallbackParams commandInfo;
     commandInfo.mWavArc = this;
@@ -170,8 +172,8 @@ void JASWaveArc::setFileName(char const* fileName) {
     length = length + strlen(fileName);
     char* path = JKR_NEW_ARRAY_ARGS(char, length + 1, JASKernel::getSystemHeap(), -4);
     JUT_ASSERT(322, path);
-    strcpy(path, currentDir);
-    strcat(path, fileName);
+    SAFE_STRCPY_BOUNDED(path, length + 1, currentDir);
+    SAFE_STRCAT_BOUNDED(path, length + 1, fileName);
     path[length] = '\0';
     int entryNum = DVDConvertPathToEntrynum(path);
     JKR_DELETE_ARRAY(path);

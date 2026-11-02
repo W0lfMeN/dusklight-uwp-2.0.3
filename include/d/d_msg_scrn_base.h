@@ -13,8 +13,8 @@ public:
     dMsgScrnBase_c();
     void init();
     void drawOutFont(f32, f32, f32);
-    void setString(char*, char*);
-    void setRubyString(char*);
+    void setString(char DUSK_CONST*, char DUSK_CONST*);
+    void setRubyString(char DUSK_CONST*);
     bool isTalkNow();
 
     virtual void draw();
@@ -22,8 +22,8 @@ public:
     virtual void exec() {}
     virtual void multiDraw();
     virtual void drawSelf();
-    virtual void setSelectString(char*, char*, char*) {}
-    virtual void setSelectRubyString(char*, char*, char*) {}
+    virtual void setSelectString(char DUSK_CONST*, char DUSK_CONST*, char DUSK_CONST*) {}
+    virtual void setSelectRubyString(char DUSK_CONST*, char DUSK_CONST*, char DUSK_CONST*) {}
     virtual void arwAnimeInit() {}
     virtual void arwAnimeMove() {}
     virtual void dotAnimeInit() {}
@@ -37,6 +37,10 @@ public:
     virtual void fukiAlpha(f32);
     virtual void fontAlpha(f32);
     virtual void fukiPosCalc(u8) {}
+#if TARGET_PC
+    virtual void presentAnims();
+    virtual bool isSelectAnimeActive() { return false; }
+#endif
 
     f32 getSelTextBoxPosX(int idx) { return mSelTextBoxPosX[idx]; }
     f32 getSelTextBoxPosY(int idx) { return mSelTextBoxPosY[idx]; }

@@ -1,6 +1,7 @@
 #ifndef D_METER_D_METER_BUTTON_H
 #define D_METER_D_METER_BUTTON_H
 
+#include "global.h"
 #include "JSystem/J2DGraph/J2DScreen.h"
 #include "JSystem/J2DGraph/J2DTextBox.h"
 #include "d/d_drawlist.h"
@@ -194,7 +195,7 @@ public:
     /* 0x0FC */ CPaneMgr* field_0x0fc[4];
     /* 0x10C */ JKRHeap* mpHeap;
     /* 0x110 */ void* mpFishingTex;
-    /* 0x114 */ char mButtonText[2][15];
+    /* 0x114 */ char mButtonText[2][DUSK_IF_ELSE(32, 15)];
     /* 0x132 */ u8 field_0x132[0x134 - 0x132];
     /* 0x134 */ f32 field_0x134;
     /* 0x138 */ f32 field_0x138;
@@ -254,7 +255,7 @@ public:
     /* 0x4B2 */ u16 mMsgID;
     /* 0x4B4 */ s16 field_0x4b4;
     /* 0x4B6 */ s16 field_0x4b6;
-    /* 0x4B8 */ s16 field_0x4b8[2];
+    /* 0x4B8 */ DUSK_IF_ELSE(f32, s16) field_0x4b8[2];
     /* 0x4BC */ u8 field_0x4bc[2];
     /* 0x4BE */ u8 field_0x4be[2];
     /* 0x4C0 */ bool mPlayedButtonSound[BUTTON_NUM];
@@ -343,10 +344,8 @@ public:
     /* 0x624 */ f32 mMidonaPosX;
     /* 0x628 */ f32 mMidonaPosY;
     /* 0x62C */ f32 mMidonaScale;
-
-#ifdef TARGET_PC
-    bool mWasListen[2];
-    bool mWasRepeat[2];
+#if TARGET_PC
+    u16 mBlinkButton = 0;
 #endif
 };
 

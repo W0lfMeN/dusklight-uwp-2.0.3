@@ -753,8 +753,9 @@ int daSpinner_c::execute() {
         } else {
             current.pos = field_0xaa4;
 
+            IF_DUSK(const bool holdToMash = DUSK_IF_ELSE(dusk::getSettings().game.holdToMash, false);)
             if (mSpinnerTag != TAG_END) {
-                if (!dComIfGp_event_runCheck() && mTrigJump) {
+                if (!dComIfGp_event_runCheck() && (holdToMash ? mDoCPd_c::getHoldA(PAD_1) : mTrigJump)) {
                     field_0xa82 += 0x200;
                     if (field_0xa82 > 5000) {
                         field_0xa82 = 5000;
@@ -933,7 +934,7 @@ static int daSpinner_Draw(daSpinner_c* i_this) {
     return i_this->draw();
 }
 
-static actor_method_class l_daSpinner_Method = {
+static DUSK_CONST actor_method_class l_daSpinner_Method = {
     (process_method_func)daSpinner_Create,
     (process_method_func)daSpinner_Delete,
     (process_method_func)daSpinner_Execute,
@@ -941,7 +942,7 @@ static actor_method_class l_daSpinner_Method = {
     (process_method_func)daSpinner_Draw,
 };
 
-actor_process_profile_definition g_profile_SPINNER = {
+DUSK_PROFILE actor_process_profile_definition DUSK_CONST g_profile_SPINNER = {
     /* Layer ID     */ fpcLy_CURRENT_e,
     /* List ID      */ 4,
     /* List Prio    */ fpcPi_CURRENT_e,

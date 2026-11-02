@@ -1,12 +1,9 @@
+#include <cerrno>
 #include <cstdio>
 #include <filesystem>
+#include <system_error>
 
-#include "dusk/app_info.hpp"
 #include "dusk/io.hpp"
-
-#include <SDL3/SDL_filesystem.h>
-
-using namespace dusk::io;
 
 #if _WIN32
 #define MODE_TYPE wchar_t
@@ -24,7 +21,10 @@ using namespace dusk::io;
 #define _SH_DENYWR 0
 #endif
 
-static FILE* ThrowIfNotOpen(const FileStream& file) {
+namespace dusk::io {
+namespace {
+
+FILE* ThrowIfNotOpen(const FileStream& file) {
     if (!file.GetFileHandle()) {
         throw std::runtime_error("Invalid file handle!");
     }
@@ -32,11 +32,14 @@ static FILE* ThrowIfNotOpen(const FileStream& file) {
     return static_cast<FILE*>(file.GetFileHandle());
 }
 
-[[noreturn]] static void ThrowForError(int code) {
+[[noreturn]] void ThrowForError(int code) {
+    if (code == 0) {
+        throw std::system_error(std::make_error_code(std::errc::io_error));
+    }
     throw std::system_error(std::make_error_code(static_cast<std::errc>(code)));
 }
 
-static FILE* OpenCore(const std::filesystem::path& path, const MODE_TYPE* mode, int shareFlag) {
+FILE* OpenCore(const std::filesystem::path& path, const MODE_TYPE* mode, int shareFlag) {
     FILE* file;
 
     int err;
@@ -57,12 +60,13 @@ static FILE* OpenCore(const std::filesystem::path& path, const MODE_TYPE* mode, 
     return file;
 }
 
-static FILE* OpenCore(const char* path, const MODE_TYPE* mode, int shareFlag) {
+FILE* OpenCore(const char* path, const MODE_TYPE* mode, int shareFlag) {
     return OpenCore(reinterpret_cast<const char8_t*>(path), mode, shareFlag);
 }
 
-FileStream::FileStream() noexcept : file(nullptr) {
-}
+}  // namespace
+
+FileStream::FileStream() noexcept : file(nullptr) {}
 
 FileStream::FileStream(FILE* file) : file(file) {
     if (!file) {
@@ -78,6 +82,14 @@ FileStream::FileStream(FileStream&& other) noexcept {
 FileStream::~FileStream() {
     if (file)
         fclose(static_cast<FILE*>(file));
+}
+
+void FileStream::Flush() {
+    FILE* fileHandle = ThrowIfNotOpen(*this);
+
+    if (fflush(fileHandle) != 0) {
+        ThrowForError(errno);
+    }
 }
 
 FileStream FileStream::OpenRead(const char* utf8Path) {
@@ -166,6 +178,7 @@ void FileStream::WriteAllText(const char* utf8Path, const std::string_view text)
 void FileStream::WriteAllText(const std::filesystem::path& path, const std::string_view text) {
     auto handle = Create(path);
     handle.Write(text.data(), text.size());
+    handle.Flush();
 }
 
 FILE* FileStream::ToInner() {
@@ -174,28 +187,4 @@ FILE* FileStream::ToInner() {
     return handle;
 }
 
-#if defined(_UWP)
-std::optional<std::filesystem::path> dusk::io::uwp_local_folder_path() {
-    char* pref = SDL_GetPrefPath(dusk::OrgName, dusk::AppName);
-    if (pref == nullptr) {
-        return std::nullopt;
-    }
-    const std::filesystem::path p = path_from_utf8(pref);
-    SDL_free(pref);
-    if (p.empty()) {
-        return std::nullopt;
-    }
-    std::error_code ec;
-    const std::filesystem::path out = std::filesystem::absolute(p, ec).lexically_normal();
-    if (ec || out.empty()) {
-        return std::nullopt;
-    }
-    if (!std::filesystem::exists(out, ec)) {
-        return std::nullopt;
-    }
-    if (!std::filesystem::is_directory(out, ec)) {
-        return std::nullopt;
-    }
-    return out;
-}
-#endif
+}  // namespace dusk::io

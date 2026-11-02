@@ -1,0 +1,113 @@
+diff -ruN bor/cmake/DetectVersion.cmake b/cmake/DetectVersion.cmake
+--- a/cmake/DetectVersion.cmake	2026-09-30 08:18:15.000000000 +0200
++++ b/cmake/DetectVersion.cmake	2026-10-31 19:23:36.757633897 +0100
+@@ -36,6 +36,7 @@
+     endif ()
+ 
+     set(BOREALIS_APP_VERSION_OVERRIDE "" CACHE STRING "Override version string (skips git detection and format validation)")
++    set(BOREALIS_APP_VERSION_FALLBACK "" CACHE STRING "Version tag (e.g. v1.2.3) to use when the source tree is not a Git checkout")
+ 
+     if (BOREALIS_APP_VERSION_OVERRIDE)
+         set(BOREALIS_APP_DESCRIBE "${BOREALIS_APP_VERSION_OVERRIDE}")
+@@ -48,7 +49,17 @@
+         message(STATUS "borealis: application version overridden to ${BOREALIS_APP_DESCRIBE}")
+     else ()
+         find_package(Git)
++        set(_bv_in_git_tree FALSE)
+         if (GIT_FOUND)
++            execute_process(WORKING_DIRECTORY ${_bv_root} COMMAND ${GIT_EXECUTABLE} rev-parse --is-inside-work-tree
++                    RESULT_VARIABLE _bv_git_result
++                    OUTPUT_QUIET
++                    ERROR_QUIET)
++            if (_bv_git_result EQUAL 0)
++                set(_bv_in_git_tree TRUE)
++            endif ()
++        endif ()
++        if (_bv_in_git_tree)
+             # Reconfigure when Git HEAD changes.
+             execute_process(WORKING_DIRECTORY ${_bv_root} COMMAND ${GIT_EXECUTABLE} rev-parse --git-path HEAD
+                     OUTPUT_VARIABLE _bv_git_head_filename
+@@ -85,7 +96,10 @@
+                     OUTPUT_VARIABLE BOREALIS_APP_DATE
+                     OUTPUT_STRIP_TRAILING_WHITESPACE)
+         else ()
+-            message(STATUS "Unable to find git, commit information will not be available")
++            message(STATUS "Not a Git checkout (or Git not found), commit information will not be available")
++        endif ()
++        if (NOT BOREALIS_APP_DESCRIBE AND BOREALIS_APP_VERSION_FALLBACK)
++            set(BOREALIS_APP_DESCRIBE "${BOREALIS_APP_VERSION_FALLBACK}")
+         endif ()
+ 
+         if (BOREALIS_APP_DESCRIBE MATCHES "^v([0-9]+)\\.([0-9]+)\\.([0-9]+)([-+].*)?$")
+diff -ruN bor/CMakeLists.txt b/CMakeLists.txt
+--- a/CMakeLists.txt	2026-09-30 08:18:15.000000000 +0200
++++ b/CMakeLists.txt	2026-10-31 19:18:49.345955366 +0100
+@@ -25,6 +25,11 @@
+     set(_borealis_discord_default OFF)
+ endif ()
+ option(BOREALIS_ENABLE_DISCORD "Build borealis::discord" ${_borealis_discord_default})
++set(_borealis_windows_store_default OFF)
++if (CMAKE_SYSTEM_NAME STREQUAL "WindowsStore")
++    set(_borealis_windows_store_default ON)
++endif ()
++option(BOREALIS_WINDOWS_STORE "Apply UWP (Windows Store / Xbox) platform restrictions" ${_borealis_windows_store_default})
+ 
+ set(BOREALIS_SENTRY_DSN "" CACHE STRING "Sentry DSN for borealis::sentry")
+ set(BOREALIS_SENTRY_ENVIRONMENT "development" CACHE STRING "Sentry environment for borealis::sentry")
+@@ -72,6 +77,9 @@
+ )
+ target_compile_features(borealis_core INTERFACE cxx_std_20)
+ target_compile_definitions(borealis_core INTERFACE BOREALIS_BUILD_TYPE="$<IF:$<BOOL:$<CONFIG>>,$<CONFIG>,None>")
++if (BOREALIS_WINDOWS_STORE)
++    target_compile_definitions(borealis_core INTERFACE BOREALIS_WINDOWS_STORE=1)
++endif ()
+ 
+ add_library(borealis_url STATIC src/url.cpp)
+ add_library(borealis::url ALIAS borealis_url)
+diff -ruN bor/src/data.cpp b/src/data.cpp
+--- a/src/data.cpp	2026-09-30 08:18:15.000000000 +0200
++++ b/src/data.cpp	2026-10-31 19:18:49.345955366 +0100
+@@ -470,7 +470,7 @@
+ #if defined(__APPLE__) && TARGET_OS_IOS && !TARGET_OS_TV && !TARGET_OS_MACCATALYST
+     environment.isIOS = true;
+ #endif
+-#if defined(_WIN32) ||                                                                             \
++#if (defined(_WIN32) && !defined(BOREALIS_WINDOWS_STORE)) ||                                      \
+     (defined(__APPLE__) && !TARGET_OS_IOS && !TARGET_OS_TV && !TARGET_OS_MACCATALYST) ||           \
+     (defined(__linux__) && !defined(__ANDROID__))
+     environment.canOpenFolder = true;
+diff -ruN bor/src/file_select/file_select.cpp b/src/file_select/file_select.cpp
+--- a/src/file_select/file_select.cpp	2026-09-30 08:18:15.000000000 +0200
++++ b/src/file_select/file_select.cpp	2026-10-31 19:18:49.345955366 +0100
+@@ -257,7 +257,7 @@
+ }  // namespace detail
+ 
+ Capabilities capabilities() noexcept {
+-#if defined(__APPLE__) && TARGET_OS_TV
++#if (defined(__APPLE__) && TARGET_OS_TV) || defined(BOREALIS_WINDOWS_STORE)
+     return {};
+ #else
+     return {.canOpenFile = true, .canOpenFolder = true, .canExportFile = true};
+diff -ruN bor/src/io.cpp b/src/io.cpp
+--- a/src/io.cpp	2026-09-30 08:18:15.000000000 +0200
++++ b/src/io.cpp	2026-10-31 19:18:49.345955366 +0100
+@@ -673,10 +673,16 @@
+                 std::system_category().message(static_cast<int>(GetLastError()));
+         return false;
+     }
+-    const bool renamed =
+-        SetFileInformationByHandle(handle, FileRenameInfoEx, info, infoSize) != FALSE;
+-    const auto renameError = renamed ? ERROR_SUCCESS : GetLastError();
++    bool renamed = SetFileInformationByHandle(handle, FileRenameInfoEx, info, infoSize) != FALSE;
++    auto renameError = renamed ? ERROR_SUCCESS : GetLastError();
+     CloseHandle(handle);
++#if defined(BOREALIS_WINDOWS_STORE)
++    if (!renamed) {
++        renamed = MoveFileExW(source.c_str(), target.c_str(),
++                      MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH) != FALSE;
++        renameError = renamed ? ERROR_SUCCESS : GetLastError();
++    }
++#endif
+     if (!renamed) {
+         error = "Failed to replace file: " +
+                 std::system_category().message(static_cast<int>(renameError));

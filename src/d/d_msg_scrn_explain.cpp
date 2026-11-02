@@ -14,7 +14,12 @@
 #include <cstdio>
 #include <cstring>
 
-#if VERSION == VERSION_GCN_JPN
+#if TARGET_PC
+#include "dusk/interp/user_interface.h"
+#include "dusk/version.hpp"
+#endif
+
+#if TARGET_PC || VERSION == VERSION_GCN_JPN
 #define STR_BUF_LEN 528
 #else
 #define STR_BUF_LEN 512
@@ -95,7 +100,13 @@ dMsgScrnExplain_c::dMsgScrnExplain_c(STControl* i_stick, u8 param_1, bool i_isUs
         mpTxScreen->search(MULTI_CHAR('n_3fline'))->hide();
         mpTxScreen->search(MULTI_CHAR('n_e4line'))->hide();
 
-#if VERSION == VERSION_GCN_JPN
+#if TARGET_PC
+        if (dusk::version::isRegionJpn()) {
+            field_0x50 = 0.0f;
+        } else {
+            field_0x50 = -10.0f;
+        }
+#elif VERSION == VERSION_GCN_JPN
         field_0x50 = 0.0f;
 #else
         field_0x50 = -10.0f;
@@ -109,7 +120,48 @@ dMsgScrnExplain_c::dMsgScrnExplain_c(STControl* i_stick, u8 param_1, bool i_isUs
 
         mpScreen->search(MULTI_CHAR('n_all'))->scale(g_MsgObject_HIO_c.mBoxTalkScaleX,
                                          g_MsgObject_HIO_c.mBoxTalkScaleY);
-#if VERSION == VERSION_GCN_JPN
+#if TARGET_PC
+        if (dusk::version::isRegionJpn()) {
+            field_0x50 = 0.0f;
+
+            if (dComIfGs_getOptRuby() == 0) {
+                mpTm_c[0] = JKR_NEW CPaneMgr(mpTxScreen, MULTI_CHAR('mg_3flin'), 0, NULL);
+                mpTm_c[1] = JKR_NEW CPaneMgr(mpTxScreen, MULTI_CHAR('t3f_s'), 0, NULL);
+
+                mpTmr_c[0] = JKR_NEW CPaneMgr(mpTxScreen, MULTI_CHAR('mg_3f'), 0, NULL);
+                mpTmr_c[1] = JKR_NEW CPaneMgr(mpTxScreen, MULTI_CHAR('mg_3f_s'), 0, NULL);
+
+                mpTxScreen->search(MULTI_CHAR('n_3line'))->hide();
+                mpTxScreen->search(MULTI_CHAR('n_3fline'))->show();
+                mpTxScreen->search(MULTI_CHAR('n_e4line'))->hide();
+            } else {
+                mpTm_c[0] = JKR_NEW CPaneMgr(mpTxScreen, MULTI_CHAR('mg_3line'), 0, NULL);
+                mpTm_c[1] = JKR_NEW CPaneMgr(mpTxScreen, 't3_s', 0, NULL);
+
+                mpTmr_c[0] = NULL;
+                mpTmr_c[1] = NULL;
+
+                mpTxScreen->search(MULTI_CHAR('n_3line'))->show();
+                mpTxScreen->search(MULTI_CHAR('n_3fline'))->hide();
+                mpTxScreen->search(MULTI_CHAR('n_e4line'))->hide();
+            }
+        } else {
+            field_0x50 = -10.0f;
+
+            mpTm_c[0] = JKR_NEW CPaneMgr(mpTxScreen, MULTI_CHAR('mg_e4lin'), 0, NULL);
+            JUT_ASSERT(162, mpTm_c[0] != NULL);
+
+            mpTm_c[1] = JKR_NEW CPaneMgr(mpTxScreen, 't4_s', 0, NULL);
+            JUT_ASSERT(165, mpTm_c[1] != NULL);
+
+            mpTmr_c[0] = NULL;
+            mpTmr_c[1] = NULL;
+
+            mpTxScreen->search(MULTI_CHAR('n_3line'))->hide();
+            mpTxScreen->search(MULTI_CHAR('n_3fline'))->hide();
+            mpTxScreen->search(MULTI_CHAR('n_e4line'))->show();
+        }
+#elif VERSION == VERSION_GCN_JPN
         field_0x50 = 0.0f;
 
         if (dComIfGs_getOptRuby() == 0) {
@@ -160,20 +212,12 @@ dMsgScrnExplain_c::dMsgScrnExplain_c(STControl* i_stick, u8 param_1, bool i_isUs
     f32 lineSpace = ((J2DTextBox*)mpTm_c[0]->getPanePtr())->getLineSpace();
     for (int i = 0; i < 2; i++) {
         ((J2DTextBox*)mpTm_c[i]->getPanePtr())->setFont(mDoExt_getMesgFont());
-#if VERSION == VERSION_GCN_JPN
-        ((J2DTextBox*)mpTm_c[i]->getPanePtr())->setString(0x210, "");
-#else
-        ((J2DTextBox*)mpTm_c[i]->getPanePtr())->setString(0x200, "");
-#endif
+        ((J2DTextBox*)mpTm_c[i]->getPanePtr())->setString(STR_BUF_LEN, "");
         ((J2DTextBox*)mpTm_c[i]->getPanePtr())->setLineSpace(lineSpace);
 
         if (mpTmr_c[i] != NULL) {
             ((J2DTextBox*)mpTmr_c[i]->getPanePtr())->setFont(mDoExt_getMesgFont());
-#if VERSION == VERSION_GCN_JPN
-            ((J2DTextBox*)mpTmr_c[i]->getPanePtr())->setString(0x210, "");
-#else
-            ((J2DTextBox*)mpTmr_c[i]->getPanePtr())->setString(0x200, "");
-#endif
+            ((J2DTextBox*)mpTmr_c[i]->getPanePtr())->setString(STR_BUF_LEN, "");
             ((J2DTextBox*)mpTmr_c[i]->getPanePtr())->setLineSpace(lineSpace);
         }
     }
@@ -283,6 +327,7 @@ dMsgScrnExplain_c::~dMsgScrnExplain_c() {
 void dMsgScrnExplain_c::move() {
     u8 currentStatus = mStatus;
 
+#if !TARGET_PC
     f32 y_offset = 0.0f;
     if (field_0x66 == 2) {
         y_offset = -35.0f;
@@ -292,6 +337,7 @@ void dMsgScrnExplain_c::move() {
         mpRoot_c[i]->paneTrans(field_0x48 + g_MsgObject_HIO_c.mChoicePos[0][6],
                                field_0x4c + g_MsgObject_HIO_c.mBoxPos[0][6] + y_offset);
     }
+#endif
 
     (this->*move_process[mStatus])();
 
@@ -303,7 +349,29 @@ void dMsgScrnExplain_c::move() {
                                      g_MsgObject_HIO_c.mBoxTalkScaleY);
 }
 
+#if TARGET_PC
+void dMsgScrnExplain_c::presentAnims() {
+    if (mStatus == STATUS_OPEN_e || mStatus == STATUS_CLOSE_e) {
+        dusk::vdt::advance_toward_frame(field_0x5a, mStatus == STATUS_OPEN_e ? 5.0f : 0.0f, 1.0f);
+        field_0x48 = FB_WIDTH_BASE * getAlphaRatio();
+        for (int i = 0; i < 2; i++) {
+            mpRoot_c[i]->setAlphaRate(1.0f - getAlphaRatio());
+        }
+        if (mpBackTex != NULL) {
+            mpBackTex->setAlpha((1.0f - getAlphaRatio()) * 150.0f);
+        }
+    }
+
+    const f32 y_offset = field_0x66 == 2 ? -35.0f : 0.0f;
+    for (int i = 0; i < 2; i++) {
+        mpRoot_c[i]->paneTrans(field_0x48 + g_MsgObject_HIO_c.mChoicePos[0][6],
+                               field_0x4c + g_MsgObject_HIO_c.mBoxPos[0][6] + y_offset);
+    }
+}
+#endif
+
 void dMsgScrnExplain_c::draw(J2DOrthoGraph* i_graf) {
+    IF_DUSK(presentAnims());
     if (mStatus == STATUS_WAIT_e || mStatus == STATUS_OPEN_REQ_e) {
         return;
     }
@@ -317,17 +385,23 @@ void dMsgScrnExplain_c::draw(J2DOrthoGraph* i_graf) {
     }
 
     char string_buf[STR_BUF_LEN];
-    strcpy(string_buf, ((J2DTextBox*)mpTm_c[0]->getPanePtr())->getStringPtr());
+    SAFE_STRCPY(string_buf, ((J2DTextBox*)mpTm_c[0]->getPanePtr())->getStringPtr());
 
     mpTxScreen->draw(0.0f, 0.0f, (J2DGrafContext*)i_graf);
-#if VERSION == VERSION_GCN_JPN
+#if TARGET_PC
+    if (dusk::version::isRegionJpn()) {
+        mpString_c->getString(mOpenMsgId, (J2DTextBox*)mpTm_c[0]->getPanePtr(), NULL, NULL, NULL, 12);
+    } else {
+        mpString_c->getString(mOpenMsgId, (J2DTextBox*)mpTm_c[0]->getPanePtr(), NULL, NULL, NULL, 8);
+    }
+#elif VERSION == VERSION_GCN_JPN
     mpString_c->getString(mOpenMsgId, (J2DTextBox*)mpTm_c[0]->getPanePtr(), NULL, NULL, NULL, 12);
 #else
     mpString_c->getString(mOpenMsgId, (J2DTextBox*)mpTm_c[0]->getPanePtr(), NULL, NULL, NULL, 8);
 #endif
     mpString_c->drawOutFont((J2DTextBox*)mpTm_c[0]->getPanePtr(), -1.0f);
 
-    strcpy(((J2DTextBox*)mpTm_c[0]->getPanePtr())->getStringPtr(), string_buf);
+    SAFE_STRCPY(((J2DTextBox*)mpTm_c[0]->getPanePtr())->getStringPtr(), string_buf);
 
     if (mpSelect_c != NULL && (field_0x64 == 1 || field_0x64 == 2)) {
         // the magic numbers here are relative to the framebuffer size, but were likely
@@ -340,6 +414,7 @@ void dMsgScrnExplain_c::draw(J2DOrthoGraph* i_graf) {
 
         mpSelect_c->translate(486.0f + g_MsgObject_HIO_c.mChoicePos[0][7],
                               209.0f + g_MsgObject_HIO_c.mBoxPos[0][7] + y_offset);
+        IF_DUSK(mpSelect_c->presentAnims());
         mpSelect_c->draw(0.0f, 0.0f);
     }
 
@@ -370,11 +445,11 @@ void dMsgScrnExplain_c::open_request_proc() {
     bool rt = dMsgObject_getString(mOpenMsgId, tbox, rubyTbox, mDoExt_getMesgFont(), mpOutFont, text,
                                    ruby, textShadow, &field_0x5c);
     if (rt) {
-        strcpy(((J2DTextBox*)mpTm_c[0]->getPanePtr())->getStringPtr(), text);
-        strcpy(((J2DTextBox*)mpTm_c[1]->getPanePtr())->getStringPtr(), textShadow);
+        SAFE_STRCPY(((J2DTextBox*)mpTm_c[0]->getPanePtr())->getStringPtr(), text);
+        SAFE_STRCPY(((J2DTextBox*)mpTm_c[1]->getPanePtr())->getStringPtr(), textShadow);
         for (int i = 0; i < 2; i++) {
             if (mpTmr_c[i] != NULL) {
-                strcpy(((J2DTextBox*)mpTmr_c[i]->getPanePtr())->getStringPtr(), ruby);
+                SAFE_STRCPY(((J2DTextBox*)mpTmr_c[i]->getPanePtr())->getStringPtr(), ruby);
             }
         }
 
@@ -396,7 +471,7 @@ void dMsgScrnExplain_c::open_init() {
 }
 
 void dMsgScrnExplain_c::open_proc() {
-    field_0x5a++;
+    IF_NOT_DUSK(field_0x5a++);
     if (field_0x5a >= 5) {
         field_0x5a = 5;
         if (field_0x64 == 1 || field_0x64 == 2) {
@@ -483,12 +558,12 @@ void dMsgScrnExplain_c::move_select_init() {
              "\x1B"
              "CR[%d]",
              (int)var_f28);
-    strcat(string_buf_yes, msg_buf_yes);
+    SAFE_STRCAT(string_buf_yes, msg_buf_yes);
     snprintf(string_buf_no, 20,
              "\x1B"
              "CR[%d]",
              (int)var_f27);
-    strcat(string_buf_no, msg_buf_no);
+    SAFE_STRCAT(string_buf_no, msg_buf_no);
 
     mpSelect_c->setString("", string_buf_yes, string_buf_no);
     mpSelect_c->setRubyString("", "", "");
@@ -578,7 +653,7 @@ void dMsgScrnExplain_c::close_proc() {
         iVar1 = true;
     }
 
-    field_0x5a--;
+    IF_NOT_DUSK(field_0x5a--);
     if (field_0x5a <= 0) {
         field_0x5a = 0;
         if (iVar1) {
@@ -643,6 +718,10 @@ f32 dMsgScrnExplain_c::getAlphaRatio() {
 bool dMsgScrnExplain_c::checkTriggerA() {
     if (mDoCPd_c::getTrigA(PAD_1)) {
         return true;
+#if TARGET_PC
+    } else if (mpSelect_c != NULL && mpSelect_c->consumePointerClick()) {
+        return true;
+#endif
     } else {
         return false;
     }

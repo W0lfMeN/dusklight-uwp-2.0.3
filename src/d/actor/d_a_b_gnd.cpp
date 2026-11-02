@@ -17,10 +17,10 @@
 
 #include "Z2AudioLib/Z2Instances.h"
 
-#include "dusk/frame_interpolation.h"
-#include "dusk/settings.h"
 #if TARGET_PC
 #include "dusk/achievements.h"
+#include "dusk/interp/frame_interpolation.h"
+#include "dusk/settings.h"
 #endif
 
 class daB_GND_HIO_c : public JORReflexible {
@@ -285,30 +285,6 @@ static int h_nodeCallBack(J3DJoint* i_joint, int param_2) {
     return 1;
 }
 
-#if TARGET_PC
-static void b_gnd_rein_interp_callback(bool isSimFrame, void* pUserWork) {
-    b_gnd_class* i_this = (b_gnd_class*)pUserWork;
-    if (!i_this->mReinsInterpPrevValid || !i_this->mReinsInterpCurrValid) {
-        return;
-    }
-    const f32 alpha = dusk::frame_interp::get_interpolation_step();
-    for (int r = 0; r < 2; r++) {
-        cXyz* dst = i_this->mHorseReins[r].getPos(0);
-        for (int i = 0; i < 16; i++) {
-            const cXyz& p0 = i_this->mReinsInterpPrev[r][i];
-            const cXyz& p1 = i_this->mReinsInterpCurr[r][i];
-            dst[i] = p0 + (p1 - p0) * alpha;
-        }
-    }
-    cXyz* dst = i_this->field_0x21e8.getPos(0);
-    for (int i = 0; i < 2; i++) {
-        const cXyz& p0 = i_this->mReinsTexInterpPrev[i];
-        const cXyz& p1 = i_this->mReinsTexInterpCurr[i];
-        dst[i] = p0 + (p1 - p0) * alpha;
-    }
-}
-#endif
-
 static int daB_GND_Draw(b_gnd_class* i_this) {
     fopAc_ac_c* a_this = (fopAc_ac_c*)i_this;
     
@@ -396,21 +372,6 @@ static int daB_GND_Draw(b_gnd_class* i_this) {
 
         i_this->field_0x21e8.update(2, l_color, &a_this->tevStr);
         dComIfGd_set3DlineMat(&i_this->field_0x21e8);
-#if TARGET_PC
-        if (dusk::getSettings().game.enableFrameInterpolation) {
-            if (i_this->mReinsInterpCurrValid) {
-                memcpy(i_this->mReinsInterpPrev, i_this->mReinsInterpCurr, sizeof(i_this->mReinsInterpCurr));
-                memcpy(i_this->mReinsTexInterpPrev, i_this->mReinsTexInterpCurr, sizeof(i_this->mReinsTexInterpCurr));
-                i_this->mReinsInterpPrevValid = true;
-            }
-            for (int r = 0; r < 2; r++) {
-                memcpy(i_this->mReinsInterpCurr[r], i_this->mHorseReins[r].getPos(0), 16 * sizeof(cXyz));
-            }
-            memcpy(i_this->mReinsTexInterpCurr, i_this->field_0x21e8.getPos(0), 2 * sizeof(cXyz));
-            i_this->mReinsInterpCurrValid = true;
-            dusk::frame_interp::add_interpolation_callback(&b_gnd_rein_interp_callback, i_this);
-        }
-#endif
     }
     
     return 1;
@@ -1234,16 +1195,12 @@ static void b_gnd_h_end(b_gnd_class* i_this) {
 
             if (i_this->mDemoCamMode < 32) {
                 i_this->mDemoCamMode = 32;
-#if TARGET_PC
-                i_this->mDemoCamSyncTicks = 2;
-#endif
+                IF_DUSK(i_this->mDemoCamSyncTicks = 2);
             } else {
                 i_this->mDemoCamMode = 34;
                 i_this->mDemoCamTimer = 0;
                 i_this->mMoveMode = 2;
-#if TARGET_PC
-                i_this->mDemoCamSyncTicks = 2;
-#endif
+                IF_DUSK(i_this->mDemoCamSyncTicks = 2);
             }
         }
         break;
@@ -2192,6 +2149,9 @@ static void damage_check(b_gnd_class* i_this) {
                             i_this->mDamageInvulnerabilityTimer = 100;
                         }
                     }
+                    #if TARGET_PC
+                    dusk::AchievementSystem::get().signal("ganondorf_hit");
+                    #endif
                 }
 
                 cXyz hitmark_size(1.0f, 1.0f, 1.0f);
@@ -2218,6 +2178,7 @@ static void damage_check(b_gnd_class* i_this) {
                     i_this->field_0xc7c = 0;
                     dScnPly_c::setPauseTimer(7);
                     a_this->health = 100;
+                    dusk::AchievementSystem::get().signal("ganondorf_knocked_down");
                 }
                 break;
             }
@@ -2943,6 +2904,7 @@ static void demo_camera(b_gnd_class* i_this) {
     s8 sp8 = false;
 #if TARGET_PC
     const s16 entry_demo_cam_mode = i_this->mDemoCamMode;
+    const bool holdToMash = DUSK_IF_ELSE(dusk::getSettings().game.holdToMash, false);
 #endif
     switch (i_this->mDemoCamMode) {
     case 0:
@@ -3401,7 +3363,7 @@ static void demo_camera(b_gnd_class* i_this) {
             cLib_addCalc2(&i_this->mDemoCamCenter.z, spF0.z + i_this->mDemoCamCenterTarget.z, 0.1f, 5.0f);
         }
 
-        if ((int)mDoCPd_c::getTrigA(PAD_1) != 0) {
+        if ((int)(holdToMash ? mDoCPd_c::getHoldA(PAD_1) : mDoCPd_c::getTrigA(PAD_1)) != 0) {
             i_this->mTubazeriPushValue += 0.1f;
             if (i_this->mTubazeriPushValue > 1.0f) {
                 i_this->mTubazeriPushValue = 1.0f;
@@ -3787,7 +3749,7 @@ static void demo_camera(b_gnd_class* i_this) {
         i_this->mDemoCamSyncTicks = 2;
     }
     if (i_this->mDemoCamSyncTicks > 0) {
-        dusk::frame_interp::request_presentation_sync();
+        dusk::interp::request_presentation_sync();
         i_this->mDemoCamSyncTicks--;
     }
 #endif
@@ -4933,7 +4895,7 @@ static int daB_GND_Create(fopAc_ac_c* a_this) {
             } // mSphAttr
         };
     
-        static dCcD_SrcCyl co_cyl_src = {
+        static DUSK_CONSTEXPR dCcD_SrcCyl co_cyl_src = {
             {
                 {0x0, {{0x0, 0x0, 0x0}, {0x0, 0x0}, 0x75}}, // mObj
                 {dCcD_SE_NONE, 0x0, 0x0, 0x0, 0x0}, // mGObjAt
@@ -5014,7 +4976,7 @@ static int daB_GND_Create(fopAc_ac_c* a_this) {
 
 b_gnd_class::b_gnd_class() {}
 
-static actor_method_class l_daB_GND_Method = {
+static DUSK_CONST actor_method_class l_daB_GND_Method = {
     (process_method_func)daB_GND_Create,
     (process_method_func)daB_GND_Delete,
     (process_method_func)daB_GND_Execute,
@@ -5022,7 +4984,7 @@ static actor_method_class l_daB_GND_Method = {
     (process_method_func)daB_GND_Draw,
 };
 
-actor_process_profile_definition g_profile_B_GND = {
+DUSK_PROFILE actor_process_profile_definition DUSK_CONST g_profile_B_GND = {
     /* Layer ID     */ fpcLy_CURRENT_e,
     /* List ID      */ 7,
     /* List Prio    */ fpcPi_CURRENT_e,

@@ -156,9 +156,6 @@ public:
     void setRegionCursor(u8 i_value) { mRegionCursor = i_value; }
     void setMapDrawFlag(bool i_flag) { mMapDrawFlag = i_flag; }
     void resetDrug() { field_0x1238 = 0; }
-#if TARGET_PC
-    void resetScrollArrowMask() { field_0x122d = 0; }
-#endif
 
     void offArrowDrawFlag() { mArrowDrawFlag = false; }
     void onArrowDrawFlag() { mArrowDrawFlag = true; }
@@ -288,8 +285,8 @@ public:
     /* 0x120C */ JUtility::TColor field_0x120c;
     /* 0x1210 */ float field_0x1210;
     /* 0x1214 */ float field_0x1214;
-    /* 0x1218 */ s16 field_0x1218;
-    /* 0x121A */ s16 field_0x121a;
+    /* 0x1218 */ DUSK_IF_ELSE(f32, s16) field_0x1218;
+    /* 0x121A */ DUSK_IF_ELSE(f32, s16) field_0x121a;
     /* 0x121C */ u8 mRegionTextureReadNum[8];
     /* 0x1224 */ u8 mSpotNum;
     /* 0x1225 */ u8 mStageDataNum;
@@ -421,6 +418,12 @@ public:
     /* 0xC2 */ u8 mAlphaButtonZ;
     /* 0xC3 */ u8 mAlphaAnalogStick;
     /* 0xC4 */ u8 mAlphaDpad;
+
+#if TARGET_PC
+    J2DTextBox* mpPoeCountPane;
+    J2DPicture* mpPoeCountIcon;
+    u8 mSelectRegionNo;
+#endif
  };
 
 #endif /* D_MENU_D_MENU_FMAP2D_H */

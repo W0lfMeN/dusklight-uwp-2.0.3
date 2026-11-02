@@ -9,6 +9,9 @@
 #include "d/d_com_inf_game.h"
 #include "f_op/f_op_actor_enemy.h"
 #include "f_op/f_op_camera_mng.h"
+#if TARGET_PC
+#include "dusk/settings.h"
+#endif
 
 class daE_GI_HIO_c : public JORReflexible {
 public:
@@ -746,20 +749,22 @@ void daE_GI_c::PushButtonCount() {
         if (abs((s16)(mPrevStickAngle - mDoCPd_c::getStickAngle3D(PAD_1))) > 0x1000) {
             mPushButtonCount++;
         }
-    
-        if (mDoCPd_c::getTrigA(PAD_1)) {
+
+        IF_DUSK(const bool holdToMash = DUSK_IF_ELSE(dusk::getSettings().game.holdToMash, false);)
+
+        if (holdToMash ? mDoCPd_c::getHoldA(PAD_1) : mDoCPd_c::getTrigA(PAD_1)) {
             mPushButtonCount += 2;
         }
 
-        if (mDoCPd_c::getTrigB(PAD_1)) {
+        if (holdToMash ? mDoCPd_c::getHoldB(PAD_1) : mDoCPd_c::getTrigB(PAD_1)) {
             mPushButtonCount += 2;
         }
 
-        if (mDoCPd_c::getTrigL(PAD_1)) {
+        if (holdToMash ? mDoCPd_c::getHoldL(PAD_1) : mDoCPd_c::getTrigL(PAD_1)) {
             mPushButtonCount += 2;
         }
 
-        if (mDoCPd_c::getTrigR(PAD_1)) {
+        if (holdToMash ? mDoCPd_c::getHoldR(PAD_1) : mDoCPd_c::getTrigR(PAD_1)) {
             mPushButtonCount += 2;
         }
 
@@ -1103,7 +1108,7 @@ static int daE_GI_Create(daE_GI_c* a_this) {
     return a_this->create();
 }
 
-static actor_method_class l_daE_GI_Method = {
+static DUSK_CONST actor_method_class l_daE_GI_Method = {
     (process_method_func)daE_GI_Create,
     (process_method_func)daE_GI_Delete,
     (process_method_func)daE_GI_Execute,
@@ -1111,7 +1116,7 @@ static actor_method_class l_daE_GI_Method = {
     (process_method_func)daE_GI_Draw,
 };
 
-actor_process_profile_definition g_profile_E_GI = {
+DUSK_PROFILE actor_process_profile_definition DUSK_CONST g_profile_E_GI = {
     /* Layer ID     */ fpcLy_CURRENT_e,
     /* List ID      */ 7,
     /* List Prio    */ fpcPi_CURRENT_e,

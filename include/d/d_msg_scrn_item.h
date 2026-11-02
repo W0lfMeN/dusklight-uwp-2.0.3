@@ -13,16 +13,22 @@ struct dMsgScrnItem_c : public dMsgScrnBase_c {
     ~dMsgScrnItem_c();
     void exec();
     void drawSelf();
+#if TARGET_PC
+    void presentAnims();
+#endif
     void arwAnimeInit();
     void arwAnimeMove();
     void dotAnimeInit();
     void dotAnimeMove();
-    void setSelectString(char*, char*, char*);
-    void setSelectRubyString(char*, char*, char*);
+    void setSelectString(char DUSK_CONST*, char DUSK_CONST*, char DUSK_CONST*);
+    void setSelectRubyString(char DUSK_CONST*, char DUSK_CONST*, char DUSK_CONST*);
     bool isSelect();
     void selectAnimeInit(u8, u8, f32, u8);
     bool selectAnimeMove(u8, u8, bool);
     bool selectAnimeEnd();
+#if TARGET_PC
+    bool isSelectAnimeActive();
+#endif
     void fukiScale(f32);
     void fukiTrans(f32, f32);
     void fukiAlpha(f32);

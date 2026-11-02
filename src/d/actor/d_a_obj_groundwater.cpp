@@ -9,6 +9,10 @@
 #include "d/d_com_inf_game.h"
 #include "m_Do/m_Do_graphic.h"
 
+#if TARGET_PC
+#include "dusk/interp/material.h"
+#endif
+
 static daGrdWater_HIO_c l_HIO;
 
 static daGrdWater_c::modeFunc l_mode_func[5] = {
@@ -299,13 +303,17 @@ int daGrdWater_c::Draw() {
     if (material->getTexGenBlock()->getTexMtx(0) != NULL) {
         J3DTexMtxInfo* mtxInfo = &material->getTexGenBlock()->getTexMtx(0)->getTexMtxInfo();
         if (mtxInfo != NULL) {
+#if TARGET_PC
+            dusk::interp::material::set_view_projection(mtxInfo, 1.0f, 1.0f, -0.01f, 0.0f);
+#else
             Mtx afStack_50;
             C_MTXLightPerspective(afStack_50, dComIfGd_getView()->fovy, dComIfGd_getView()->aspect,
                                   1.0f, 1.0f, -0.01f, 0.0f);
-            #if WIDESCREEN_SUPPORT
+#if WIDESCREEN_SUPPORT
             mDoGph_gInf_c::setWideZoomLightProjection(afStack_50);
-            #endif
+#endif
             mtxInfo->setEffectMtx(afStack_50);
+#endif
             modelData2->simpleCalcMaterial(0, (MtxP)j3dDefaultMtx);
         }
     }
@@ -335,7 +343,7 @@ static int daGrdWater_Create(fopAc_ac_c* i_this) {
     return static_cast<daGrdWater_c*>(i_this)->create();
 }
 
-static actor_method_class l_daGrdWater_Method = {
+static DUSK_CONST actor_method_class l_daGrdWater_Method = {
     (process_method_func)daGrdWater_Create,
     (process_method_func)daGrdWater_Delete,
     (process_method_func)daGrdWater_Execute,
@@ -343,7 +351,7 @@ static actor_method_class l_daGrdWater_Method = {
     (process_method_func)daGrdWater_Draw,
 };
 
-actor_process_profile_definition g_profile_GRDWATER = {
+DUSK_PROFILE actor_process_profile_definition DUSK_CONST g_profile_GRDWATER = {
     /* Layer ID     */ fpcLy_CURRENT_e,
     /* List ID      */ 3,
     /* List Prio    */ fpcPi_CURRENT_e,

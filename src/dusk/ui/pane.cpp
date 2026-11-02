@@ -57,7 +57,7 @@ Pane::Pane(Rml::Element* parent, Type type) : FluentComponent(createRoot(parent)
         }
         int i = focusedChild + direction;
         while (i >= 0 && i < mChildren.size()) {
-            if (mChildren[i]->focus()) {
+            if (mChildren[i]->focus_from(cmd)) {
                 mDoAud_seStartMenu(kSoundItemFocus);
                 event.StopPropagation();
                 break;
@@ -71,7 +71,7 @@ Pane::Pane(Rml::Element* parent, Type type) : FluentComponent(createRoot(parent)
         listen(Rml::EventId::Submit, [this](Rml::Event& event) {
             int childIndex = -1;
             for (int i = 0; i < mChildren.size(); ++i) {
-                if (event.GetTargetElement() == mChildren[i]->root()) {
+                if (mChildren[i]->contains(event.GetTargetElement())) {
                     childIndex = i;
                 }
             }
@@ -88,11 +88,6 @@ Pane::Pane(Rml::Element* parent, Type type) : FluentComponent(createRoot(parent)
             }
         });
     }
-}
-
-void Pane::update() {
-    finalize();
-    Component::update();
 }
 
 void Pane::set_selected_item(int index) {
@@ -164,65 +159,16 @@ bool Pane::focus() {
 }
 
 bool Pane::focus_last() {
-    for (int i = static_cast<int>(mChildren.size()) - 1; i >= 0; --i) {
-        if (mChildren[static_cast<std::size_t>(i)]->focus()) {
+    for (auto child = mChildren.rbegin(); child != mChildren.rend(); ++child) {
+        if ((*child)->focus()) {
             return true;
         }
     }
     return false;
 }
 
-Rml::Element* Pane::add_section(const Rml::String& text) {
-    auto* elem = append(mRoot, "div");
-    elem->SetClass("section-heading", true);
-    elem->SetInnerRML(escape(text));
-    return elem;
-}
-
-Rml::Element* Pane::add_text(const Rml::String& text) {
-    auto* elem = append(mRoot, "div");
-    elem->SetInnerRML(escape(text));
-    return elem;
-}
-
-Rml::Element* Pane::add_rml(const Rml::String& rml) {
-    auto* elem = append(mRoot, "div");
-    elem->SetInnerRML(rml);
-    return elem;
-}
-
-void Pane::finalize() {
-    if (finalized) {
-        return;
-    }
-    finalized = true;
-
-    // Append spacer element to the bottom. RmlUi does not properly handle
-    // padding-bottom or margin-bottom on a scrollable flex container, so
-    // we need to create a fake spacer with an actual layout height to get
-    // padding at the bottom of a scrollable container.
-    append(mRoot, "spacer");
-}
-
 void Pane::clear() {
     clear_children();
-    finalized = false;
-}
-
-int Pane::child_index_containing(Rml::Element* target) const {
-    if (target == nullptr) {
-        return -1;
-    }
-    for (int i = 0; i < static_cast<int>(mChildren.size()); ++i) {
-        if (mChildren[static_cast<std::size_t>(i)]->contains(target)) {
-            return i;
-        }
-    }
-    return -1;
-}
-
-int Pane::row_count() const noexcept {
-    return static_cast<int>(mChildren.size());
 }
 
 }  // namespace dusk::ui

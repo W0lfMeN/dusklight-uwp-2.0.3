@@ -1,0 +1,1694 @@
+diff -ruN '--exclude=extern' '--exclude=UWP_PORT' '--exclude=UWP_GIT' '--exclude=dusklight-uwp-uwp-1.1.1' '--exclude=dusklight-uwp_1.1.1.0' '--exclude=patches' '--exclude=*.png' '--exclude=PLAN_PORT_UWP.md' '--exclude=GUIA_UWP.md' '--exclude=ESTADO_SESION_UWP.md' ./cmake/UwpLinkManifest.cmake UWP_PORT/cmake/UwpLinkManifest.cmake
+--- a/cmake/UwpLinkManifest.cmake	1970-01-01 01:00:00.000000000 +0100
++++ b/cmake/UwpLinkManifest.cmake	2026-10-31 19:23:17.455585300 +0100
+@@ -0,0 +1,196 @@
++# Writes the full link closure of the UWP game library (stage 1) so that the packaged app in
++# platforms/uwp (stage 2) can link it without a hand-maintained list of libraries.
++#
++#   dusk_uwp_write_link_manifest(<target> <output .cmake file>)
++#
++# The generated file sets:
++#   DUSK_UWP_GAME_LIB      the game library itself (linked with /WHOLEARCHIVE)
++#   DUSK_UWP_LINK_LIBS     every other library to link, in discovery order
++#   DUSK_UWP_LINK_OPTIONS  linker flags found among the link items
++#   DUSK_UWP_RUNTIME_DLLS  DLLs of imported/shared dependencies to deploy with the package
++include_guard(GLOBAL)
++
++# Targets that must not end up in the packaged app.
++set(DUSK_UWP_LINK_EXCLUDE aurora_main CACHE STRING "Targets left out of the UWP link manifest")
++
++# Generator expressions that cannot be evaluated outside of a link step.
++set(_DUSK_UWP_UNSUPPORTED_GENEX "LINK_LANGUAGE|COMPILE_LANGUAGE|LINK_LIBRARY|DEVICE_LINK|HOST_LINK|TARGET_PROPERTY")
++
++# Splitting a property on ';' breaks generator expressions that contain lists; join them back
++# together using ',' (only list-taking expressions such as LINK_GROUP are affected).
++function(_dusk_uwp_join_genex_items in_list out_var)
++    set(result "")
++    set(pending "")
++    set(depth 0)
++    foreach (item IN LISTS in_list)
++        if (pending STREQUAL "")
++            set(pending "${item}")
++        else ()
++            set(pending "${pending},${item}")
++        endif ()
++        string(REGEX MATCHALL "\\$<" opens "${item}")
++        string(REGEX MATCHALL ">" closes "${item}")
++        list(LENGTH opens nOpen)
++        list(LENGTH closes nClose)
++        math(EXPR depth "${depth} + ${nOpen} - ${nClose}")
++        if (depth LESS_EQUAL 0)
++            list(APPEND result "${pending}")
++            set(pending "")
++            set(depth 0)
++        endif ()
++    endforeach ()
++    if (NOT pending STREQUAL "")
++        list(APPEND result "${pending}")
++    endif ()
++    set(${out_var} "${result}" PARENT_SCOPE)
++endfunction()
++
++# Unwraps the generator expressions that CMake itself places in link interfaces.
++function(_dusk_uwp_unwrap item out_var)
++    set(result "")
++    if (item MATCHES "^::@")
++        # Directory scope marker added by target_link_libraries() called from another directory.
++    elseif (item MATCHES "^\\$<LINK_ONLY:(.+)>$")
++        _dusk_uwp_unwrap("${CMAKE_MATCH_1}" result)
++    elseif (item MATCHES "^\\$<BUILD_INTERFACE:(.+)>$" OR item MATCHES "^\\$<BUILD_LOCAL_INTERFACE:(.+)>$")
++        _dusk_uwp_unwrap("${CMAKE_MATCH_1}" result)
++    elseif (item MATCHES "^\\$<INSTALL_INTERFACE:")
++    elseif (item MATCHES "^\\$<LINK_GROUP:[^,>]+,(.+)>$")
++        string(REPLACE "," ";" parts "${CMAKE_MATCH_1}")
++        foreach (part IN LISTS parts)
++            _dusk_uwp_unwrap("${part}" partResult)
++            list(APPEND result ${partResult})
++        endforeach ()
++    elseif (item MATCHES "^\\$<\\$<CONFIG:Debug>:")
++        # Stage 1 is always a release (RelWithDebInfo) configuration.
++    elseif (item MATCHES "^\\$<\\$<NOT:\\$<CONFIG:Debug>>:(.+)>$")
++        _dusk_uwp_unwrap("${CMAKE_MATCH_1}" result)
++    else ()
++        set(result "${item}")
++    endif ()
++    set(${out_var} "${result}" PARENT_SCOPE)
++endfunction()
++
++function(_dusk_uwp_walk tgt)
++    get_target_property(aliased ${tgt} ALIASED_TARGET)
++    if (aliased)
++        set(tgt "${aliased}")
++    endif ()
++
++    get_property(visited GLOBAL PROPERTY _DUSK_UWP_VISITED)
++    if (tgt IN_LIST visited OR tgt IN_LIST DUSK_UWP_LINK_EXCLUDE)
++        return()
++    endif ()
++    set_property(GLOBAL APPEND PROPERTY _DUSK_UWP_VISITED "${tgt}")
++
++    get_target_property(type ${tgt} TYPE)
++    get_target_property(imported ${tgt} IMPORTED)
++
++    # The private dependencies of a shared library are already linked into it.
++    set(props INTERFACE_LINK_LIBRARIES)
++    if (NOT imported AND type MATCHES "^(STATIC_LIBRARY|OBJECT_LIBRARY|INTERFACE_LIBRARY)$")
++        list(APPEND props LINK_LIBRARIES)
++    endif ()
++
++    if (type STREQUAL "STATIC_LIBRARY" OR type STREQUAL "SHARED_LIBRARY")
++        set_property(GLOBAL APPEND PROPERTY _DUSK_UWP_LIBS "$<TARGET_LINKER_FILE:${tgt}>")
++    elseif (type STREQUAL "UNKNOWN_LIBRARY")
++        set_property(GLOBAL APPEND PROPERTY _DUSK_UWP_LIBS "$<TARGET_FILE:${tgt}>")
++    endif ()
++    if (type STREQUAL "SHARED_LIBRARY")
++        set_property(GLOBAL APPEND PROPERTY _DUSK_UWP_DLLS "$<TARGET_FILE:${tgt}>")
++    endif ()
++
++    foreach (prop IN LISTS props)
++        get_target_property(raw ${tgt} ${prop})
++        if (NOT raw)
++            continue()
++        endif ()
++        _dusk_uwp_join_genex_items("${raw}" items)
++        foreach (item IN LISTS items)
++            _dusk_uwp_unwrap("${item}" unwrapped)
++            foreach (dep IN LISTS unwrapped)
++                if (dep STREQUAL "")
++                    continue()
++                elseif (TARGET "${dep}")
++                    _dusk_uwp_walk("${dep}")
++                elseif (dep MATCHES "^[-/]")
++                    set_property(GLOBAL APPEND PROPERTY _DUSK_UWP_OPTIONS "${dep}")
++                elseif (dep MATCHES "\\$<")
++                    if (dep MATCHES "${_DUSK_UWP_UNSUPPORTED_GENEX}")
++                        message(WARNING "dusklight-uwp: ignoring link item of ${tgt}: ${dep}")
++                    else ()
++                        set_property(GLOBAL APPEND PROPERTY _DUSK_UWP_LIBS "${dep}")
++                    endif ()
++                else ()
++                    set_property(GLOBAL APPEND PROPERTY _DUSK_UWP_LIBS "${dep}")
++                endif ()
++            endforeach ()
++        endforeach ()
++    endforeach ()
++endfunction()
++
++function(dusk_uwp_write_link_manifest target output)
++    if (CMAKE_CONFIGURATION_TYPES)
++        message(FATAL_ERROR "dusklight-uwp: stage 1 needs a single-configuration generator "
++                "(use the windows-uwp-lib preset)")
++    endif ()
++
++    set_property(GLOBAL PROPERTY _DUSK_UWP_VISITED "${target}")
++    set_property(GLOBAL PROPERTY _DUSK_UWP_LIBS "")
++    set_property(GLOBAL PROPERTY _DUSK_UWP_DLLS "")
++    set_property(GLOBAL PROPERTY _DUSK_UWP_OPTIONS "")
++
++    foreach (prop LINK_LIBRARIES INTERFACE_LINK_LIBRARIES)
++        get_target_property(raw ${target} ${prop})
++        if (NOT raw)
++            continue()
++        endif ()
++        _dusk_uwp_join_genex_items("${raw}" items)
++        foreach (item IN LISTS items)
++            _dusk_uwp_unwrap("${item}" unwrapped)
++            foreach (dep IN LISTS unwrapped)
++                if (TARGET "${dep}")
++                    _dusk_uwp_walk("${dep}")
++                elseif (dep MATCHES "^[-/]")
++                    set_property(GLOBAL APPEND PROPERTY _DUSK_UWP_OPTIONS "${dep}")
++                elseif (NOT dep STREQUAL "" AND NOT dep MATCHES "${_DUSK_UWP_UNSUPPORTED_GENEX}")
++                    set_property(GLOBAL APPEND PROPERTY _DUSK_UWP_LIBS "${dep}")
++                endif ()
++            endforeach ()
++        endforeach ()
++    endforeach ()
++
++    # Aggregate target that builds every library in the manifest: libraries only reached through
++    # link interfaces are not necessarily build dependencies of a static library.
++    get_property(visited GLOBAL PROPERTY _DUSK_UWP_VISITED)
++    add_custom_target(${target}_uwp ALL)
++    foreach (tgt IN LISTS visited)
++        get_target_property(type ${tgt} TYPE)
++        get_target_property(imported ${tgt} IMPORTED)
++        if (NOT imported AND type MATCHES "^(STATIC_LIBRARY|SHARED_LIBRARY|OBJECT_LIBRARY)$")
++            add_dependencies(${target}_uwp ${tgt})
++        endif ()
++    endforeach ()
++
++    get_property(libs GLOBAL PROPERTY _DUSK_UWP_LIBS)
++    get_property(dlls GLOBAL PROPERTY _DUSK_UWP_DLLS)
++    get_property(options GLOBAL PROPERTY _DUSK_UWP_OPTIONS)
++    list(REMOVE_DUPLICATES libs)
++    list(REMOVE_DUPLICATES dlls)
++    list(REMOVE_DUPLICATES options)
++    list(LENGTH libs libCount)
++    message(STATUS "dusklight-uwp: link manifest with ${libCount} libraries -> ${output}")
++
++    file(GENERATE OUTPUT "${output}" CONTENT "\
++# Generated by cmake/UwpLinkManifest.cmake during the stage 1 configure. Do not edit.
++set(DUSK_UWP_CONFIG [=[$<CONFIG>]=])
++set(DUSK_UWP_SOURCE_DIR [=[${CMAKE_SOURCE_DIR}]=])
++set(DUSK_UWP_MSVC_VERSION [=[${MSVC_VERSION}]=])
++set(DUSK_UWP_MSVC_RUNTIME_LIBRARY [=[${CMAKE_MSVC_RUNTIME_LIBRARY}]=])
++set(DUSK_UWP_GAME_LIB [=[$<TARGET_LINKER_FILE:${target}>]=])
++set(DUSK_UWP_LINK_LIBS [=[${libs}]=])
++set(DUSK_UWP_LINK_OPTIONS [=[${options}]=])
++set(DUSK_UWP_RUNTIME_DLLS [=[${dlls}]=])
++")
++endfunction()
+diff -ruN '--exclude=extern' '--exclude=UWP_PORT' '--exclude=UWP_GIT' '--exclude=dusklight-uwp-uwp-1.1.1' '--exclude=dusklight-uwp_1.1.1.0' '--exclude=patches' '--exclude=*.png' '--exclude=PLAN_PORT_UWP.md' '--exclude=GUIA_UWP.md' '--exclude=ESTADO_SESION_UWP.md' ./CMakeLists.txt UWP_PORT/CMakeLists.txt
+--- a/CMakeLists.txt	2026-09-30 08:19:34.000000000 +0200
++++ b/CMakeLists.txt	2026-10-31 19:33:48.932305937 +0100
+@@ -70,6 +70,26 @@
+ if (CMAKE_SYSTEM_NAME STREQUAL Linux)
+   set(DAWN_USE_WAYLAND ON CACHE BOOL "Enable support for Wayland surface" FORCE)
+ endif ()
++
++# UWP (Xbox) build, stage 1: the game is built as a static library that platforms/uwp links
++# into the packaged app. See GUIA_UWP.md.
++option(DUSK_UWP "Build the game as a static library for the UWP package in platforms/uwp" OFF)
++option(DUSK_UWP_NETWORK "Enable network features (WinHTTP) in the UWP build" ON)
++if (DUSK_UWP)
++    if (NOT MSVC OR NOT CMAKE_SIZEOF_VOID_P EQUAL 8)
++        message(FATAL_ERROR "DUSK_UWP requires an x64 MSVC build on Windows")
++    endif ()
++    set(AURORA_UWP_DEP_SOURCE_DIR "${CMAKE_SOURCE_DIR}/extern/uwp-dep" CACHE PATH "Path to a local uwp-dep checkout")
++    set(BOREALIS_WINDOWS_STORE ON CACHE BOOL "" FORCE)
++    set(BOREALIS_ENABLE_DISCORD OFF CACHE BOOL "" FORCE)
++    set(BOREALIS_ENABLE_SENTRY OFF CACHE BOOL "" FORCE)
++    if (NOT DUSK_UWP_NETWORK)
++        set(BOREALIS_HTTP_BACKEND none CACHE STRING "" FORCE)
++    endif ()
++    set(DUSK_ENABLE_CODE_MODS OFF CACHE BOOL "Enable code mods" FORCE)
++    message(STATUS "dusklight: UWP stage 1 (static game library, code mods disabled)")
++endif ()
++
+ set(AURORA_ENABLE_DVD ON CACHE BOOL "Enable DVD API support" FORCE)
+ set(AURORA_ENABLE_CARD ON CACHE BOOL "Enable CARD API support" FORCE)
+ set(AURORA_ENABLE_THP ON CACHE BOOL "Enable THP decoder" FORCE)
+@@ -298,6 +318,9 @@
+ list(APPEND GAME_COMPILE_DEFS
+         DUSK_HAS_FUNCHOOK=$<BOOL:${DUSK_HAS_FUNCHOOK}>
+         DUSK_HAS_PREPATCH=$<BOOL:${DUSK_HAS_PREPATCH}>)
++if (DUSK_UWP)
++    list(APPEND GAME_COMPILE_DEFS _UWP=1)
++endif ()
+ 
+ if (DUSK_PACKAGE_INSTALL)
+     include(GNUInstallDirs)
+@@ -363,6 +386,10 @@
+ if (ENABLE_ASAN)
+     target_sources(dusk_internal PRIVATE src/dusk/asan_options.c)
+ endif ()
++if (DUSK_UWP)
++    # In-app file browser replacing the system picker, which Xbox does not have.
++    target_sources(dusk_internal PRIVATE src/dusk/ui/file_browser.cpp src/dusk/ui/file_browser.hpp)
++endif ()
+ target_compile_definitions(dusk_internal PRIVATE ${GAME_COMPILE_DEFS})
+ target_include_directories(dusk_internal PRIVATE ${miniz_SOURCE_DIR})
+ target_link_libraries(dusk_internal PRIVATE aurora::main ${GAME_LIBS} ${JSYSTEM_LIBRARIES})
+@@ -370,6 +397,8 @@
+ 
+ if(ANDROID)
+     add_library(dusklight SHARED ${GAME_FILES} ${miniz_SOURCE_DIR}/miniz.c)
++elseif (DUSK_UWP)
++    add_library(dusklight STATIC ${GAME_FILES} ${miniz_SOURCE_DIR}/miniz.c)
+ else ()
+     add_executable(dusklight ${GAME_FILES} ${miniz_SOURCE_DIR}/miniz.c)
+ endif ()
+@@ -493,7 +522,7 @@
+     target_link_libraries(dusklight PRIVATE dl)
+ endif ()
+ 
+-if (NOT APPLE)
++if (NOT APPLE AND NOT DUSK_UWP)
+     add_custom_command(TARGET dusklight POST_BUILD
+         COMMAND ${CMAKE_COMMAND} -E copy_directory
+             "${CMAKE_SOURCE_DIR}/res"
+@@ -502,7 +531,7 @@
+     )
+ endif ()
+ 
+-if (WIN32)
++if (WIN32 AND NOT DUSK_UWP)
+     set(DUSK_WINDOWS_RESOURCE_DIR ${CMAKE_CURRENT_SOURCE_DIR}/platforms/windows)
+     set(DUSK_WINDOWS_ICON_PNG ${CMAKE_CURRENT_SOURCE_DIR}/res/icon.png)
+     set(DUSK_WINDOWS_ICON_ICO ${CMAKE_CURRENT_BINARY_DIR}/dusklight.ico)
+@@ -613,7 +642,9 @@
+ endif ()
+ 
+ include(extern/aurora/cmake/AuroraCopyRuntimeDLLs.cmake)
+-aurora_copy_runtime_dlls(dusklight)
++if (NOT DUSK_UWP)
++    aurora_copy_runtime_dlls(dusklight)
++endif ()
+ 
+ if (DUSK_SELECTED_OPT)
+     if (CMAKE_CXX_COMPILER_FRONTEND_VARIANT STREQUAL "MSVC")
+@@ -627,6 +658,13 @@
+     target_compile_options(freeverb PRIVATE ${_opt_flags})
+ endif ()
+ 
++if (DUSK_UWP)
++    # Stage 1 ends here: platforms/uwp consumes the static library and this manifest.
++    include(cmake/UwpLinkManifest.cmake)
++    dusk_uwp_write_link_manifest(dusklight "${CMAKE_BINARY_DIR}/uwp_link.cmake")
++    return()
++endif ()
++
+ # Packaging logic
+ function(get_target_output_name target result_var)
+     get_target_property(output_name ${target} OUTPUT_NAME)
+diff -ruN '--exclude=extern' '--exclude=UWP_PORT' '--exclude=UWP_GIT' '--exclude=dusklight-uwp-uwp-1.1.1' '--exclude=dusklight-uwp_1.1.1.0' '--exclude=patches' '--exclude=*.png' '--exclude=PLAN_PORT_UWP.md' '--exclude=GUIA_UWP.md' '--exclude=ESTADO_SESION_UWP.md' ./CMakePresets.json UWP_PORT/CMakePresets.json
+--- a/CMakePresets.json	2026-09-30 08:19:34.000000000 +0200
++++ b/CMakePresets.json	2026-10-31 19:23:27.355610178 +0100
+@@ -186,6 +186,23 @@
+       ]
+     },
+     {
++      "name": "windows-uwp-lib",
++      "displayName": "Windows (MSVC) UWP game library",
++      "description": "Stage 1 of the UWP (Xbox) build: the game as a static library for platforms/uwp",
++      "inherits": [
++        "relwithdebinfo",
++        "windows-msvc"
++      ],
++      "binaryDir": "${sourceDir}/build/uwp-lib",
++      "cacheVariables": {
++        "DUSK_UWP": {
++          "type": "BOOL",
++          "value": true
++        },
++        "BOREALIS_APP_VERSION_FALLBACK": "v2.0.3"
++      }
++    },
++    {
+       "name": "windows-arm64-msvc",
+       "displayName": "Windows ARM64 (MSVC)",
+       "inherits": [
+@@ -683,6 +700,15 @@
+       "displayName": "Windows (MSVC) RelWithDebInfo"
+     },
+     {
++      "name": "windows-uwp-lib",
++      "configurePreset": "windows-uwp-lib",
++      "description": "Stage 1 of the UWP (Xbox) build",
++      "displayName": "Windows (MSVC) UWP game library",
++      "targets": [
++        "dusklight_uwp"
++      ]
++    },
++    {
+       "name": "windows-clang-debug",
+       "configurePreset": "windows-clang-debug",
+       "description": "Windows (Clang) debug build",
+diff -ruN '--exclude=extern' '--exclude=UWP_PORT' '--exclude=UWP_GIT' '--exclude=dusklight-uwp-uwp-1.1.1' '--exclude=dusklight-uwp_1.1.1.0' '--exclude=patches' '--exclude=*.png' '--exclude=PLAN_PORT_UWP.md' '--exclude=GUIA_UWP.md' '--exclude=ESTADO_SESION_UWP.md' ./.gitignore UWP_PORT/.gitignore
+--- a/.gitignore	2026-09-30 08:19:34.000000000 +0200
++++ b/.gitignore	2026-11-01 10:55:33.426744649 +0100
+@@ -53,3 +53,19 @@
+ pipeline_cache.bin
+ 
+ extract
++
++# UWP port: logs and reports written to the root by tools\uwp\*.bat
++/entorno.log
++/fase1-*.log
++/fase2-*.log
++/sdl3-*.log
++/imports-report.txt
++
++# UWP packaging: signing certificates (never commit the .pfx) and package output
++*.pfx
++AppPackages/
++*.msix
++*.msixbundle
++*.appx
++*.appxbundle
++*.appxsym
+diff -ruN '--exclude=extern' '--exclude=UWP_PORT' '--exclude=UWP_GIT' '--exclude=dusklight-uwp-uwp-1.1.1' '--exclude=dusklight-uwp_1.1.1.0' '--exclude=patches' '--exclude=*.png' '--exclude=PLAN_PORT_UWP.md' '--exclude=GUIA_UWP.md' '--exclude=ESTADO_SESION_UWP.md' ./platforms/uwp/cmake/AssetDeploy.cmake UWP_PORT/platforms/uwp/cmake/AssetDeploy.cmake
+--- a/platforms/uwp/cmake/AssetDeploy.cmake	1970-01-01 01:00:00.000000000 +0100
++++ b/platforms/uwp/cmake/AssetDeploy.cmake	2026-10-31 19:30:48.788794483 +0100
+@@ -0,0 +1,29 @@
++function(uwp_pkg TARGET SOURCE_DIR DEST_SUBDIR)
++    file(GLOB_RECURSE FILES CONFIGURE_DEPENDS RELATIVE "${SOURCE_DIR}" "${SOURCE_DIR}/*")
++
++    foreach(FILE_IN_DIR ${FILES})
++        # UWP needs dll's in the root, skip or it will overwrite main cmake config for special dll files
++        if(FILE_IN_DIR MATCHES "\\.dll$")
++            continue()
++        endif()
++
++        set(SRC "${SOURCE_DIR}/${FILE_IN_DIR}")
++
++        get_filename_component(REL_DIR "${FILE_IN_DIR}" DIRECTORY)
++        string(REPLACE "\\" "/" REL_DIR "${REL_DIR}")
++        if(REL_DIR STREQUAL "" OR REL_DIR STREQUAL ".")
++            set(DEPLOY_DIR "${DEST_SUBDIR}")
++        else()
++            set(DEPLOY_DIR "${DEST_SUBDIR}/${REL_DIR}")
++        endif()
++
++        set_source_files_properties("${SRC}" PROPERTIES
++            VS_COPY_TO_OUT_DIR Always
++            VS_DEPLOYMENT_CONTENT 1
++            VS_DEPLOYMENT_LOCATION "${DEPLOY_DIR}"
++        )
++
++        target_sources(${TARGET} PRIVATE "${SRC}")
++        source_group("Data" FILES "${SRC}")
++    endforeach()
++endfunction()
+diff -ruN '--exclude=extern' '--exclude=UWP_PORT' '--exclude=UWP_GIT' '--exclude=dusklight-uwp-uwp-1.1.1' '--exclude=dusklight-uwp_1.1.1.0' '--exclude=patches' '--exclude=*.png' '--exclude=PLAN_PORT_UWP.md' '--exclude=GUIA_UWP.md' '--exclude=ESTADO_SESION_UWP.md' ./platforms/uwp/CMakeLists.txt UWP_PORT/platforms/uwp/CMakeLists.txt
+--- a/platforms/uwp/CMakeLists.txt	1970-01-01 01:00:00.000000000 +0100
++++ b/platforms/uwp/CMakeLists.txt	2026-11-01 00:45:50.675303024 +0100
+@@ -0,0 +1,158 @@
++cmake_minimum_required(VERSION 3.25)
++
++# UWP (Xbox) build, stage 2: packages the static game library built by the windows-uwp-lib
++# preset (stage 1). Configure with the Visual Studio generator, for example:
++#   cmake -S platforms/uwp -B build/uwp -G "Visual Studio 18 2026" -A x64
++# See GUIA_UWP.md at the repository root.
++
++set(CMAKE_SYSTEM_NAME WindowsStore)
++set(CMAKE_SYSTEM_VERSION 10.0)
++# Stage 1 is RelWithDebInfo with the release DLL CRT; Debug would mix CRTs.
++set(CMAKE_CONFIGURATION_TYPES "RelWithDebInfo;Release" CACHE STRING "" FORCE)
++set(CMAKE_MSVC_RUNTIME_LIBRARY "MultiThreadedDLL" CACHE STRING "" FORCE)
++set(CMAKE_CXX_STANDARD 20)
++set(CMAKE_CXX_STANDARD_REQUIRED ON)
++
++list(APPEND CMAKE_MODULE_PATH "${CMAKE_CURRENT_LIST_DIR}/cmake")
++include(AssetDeploy)
++
++project(dusklight-uwp LANGUAGES CXX)
++set_directory_properties(PROPERTIES VS_STARTUP_PROJECT ${PROJECT_NAME})
++
++get_filename_component(_dusk_root "${CMAKE_CURRENT_LIST_DIR}/../.." ABSOLUTE)
++set(DUSK_DIR "${_dusk_root}/build/uwp-lib" CACHE PATH "Stage 1 build directory (windows-uwp-lib preset)")
++set(DUSK_UWP_CERTIFICATE "" CACHE FILEPATH "Optional .pfx used to sign the package (its subject must match the manifest Publisher)")
++set(DUSK_UWP_MIN_VERSION "10.0.17763.0" CACHE STRING "Minimum Windows/Xbox OS version of the package")
++
++if (NOT EXISTS "${DUSK_DIR}/uwp_link.cmake")
++	message(FATAL_ERROR
++		"dusklight-uwp: ${DUSK_DIR}/uwp_link.cmake not found. Build stage 1 first:\n"
++		"  cmake --preset windows-uwp-lib\n"
++		"  cmake --build --preset windows-uwp-lib\n"
++		"or point DUSK_DIR at the stage 1 build directory.")
++endif ()
++include("${DUSK_DIR}/uwp_link.cmake")
++
++if (NOT DUSK_UWP_MSVC_RUNTIME_LIBRARY STREQUAL "MultiThreadedDLL")
++	message(FATAL_ERROR "dusklight-uwp: stage 1 must use the MultiThreadedDLL (/MD) CRT; "
++		"found '${DUSK_UWP_MSVC_RUNTIME_LIBRARY}'. Use the windows-uwp-lib preset.")
++endif ()
++if (MSVC_VERSION AND DUSK_UWP_MSVC_VERSION AND MSVC_VERSION LESS DUSK_UWP_MSVC_VERSION)
++	message(FATAL_ERROR "dusklight-uwp: stage 1 was built with a newer MSVC (${DUSK_UWP_MSVC_VERSION}) "
++		"than this project uses (${MSVC_VERSION}). Use the same Visual Studio for both stages.")
++endif ()
++message(STATUS "dusklight-uwp: stage 1 (${DUSK_UWP_CONFIG}) from ${DUSK_DIR}")
++
++# Libraries from the stage 1 link manifest; check they were all built.
++set(_dusk_link_libs "")
++set(_dusk_missing "")
++foreach (_lib IN LISTS DUSK_UWP_GAME_LIB DUSK_UWP_LINK_LIBS)
++	if (_lib STREQUAL "")
++		continue()
++	endif ()
++	if (IS_ABSOLUTE "${_lib}" AND NOT EXISTS "${_lib}")
++		list(APPEND _dusk_missing "${_lib}")
++	endif ()
++	list(APPEND _dusk_link_libs "${_lib}")
++endforeach ()
++if (_dusk_missing)
++	list(JOIN _dusk_missing "\n  " _dusk_missing_text)
++	message(FATAL_ERROR "dusklight-uwp: stage 1 libraries are missing, run "
++		"'cmake --build --preset windows-uwp-lib' first:\n  ${_dusk_missing_text}")
++endif ()
++
++set(_dusk_uwp_dep "${DUSK_UWP_SOURCE_DIR}/extern/uwp-dep/x64")
++
++add_executable(${PROJECT_NAME} WIN32
++	main.cpp
++	Package.appxmanifest
++)
++set_target_properties(${PROJECT_NAME} PROPERTIES
++	VS_WINDOWS_TARGET_PLATFORM_MIN_VERSION "${DUSK_UWP_MIN_VERSION}"
++)
++target_include_directories(${PROJECT_NAME} PRIVATE "${_dusk_uwp_dep}/include")
++
++if (DUSK_UWP_CERTIFICATE)
++	if (NOT EXISTS "${DUSK_UWP_CERTIFICATE}")
++		message(FATAL_ERROR "dusklight-uwp: DUSK_UWP_CERTIFICATE not found: ${DUSK_UWP_CERTIFICATE}")
++	endif ()
++	target_sources(${PROJECT_NAME} PRIVATE "${DUSK_UWP_CERTIFICATE}")
++endif ()
++
++# Runtime DLLs: everything shipped by uwp-dep (SDL3, Dawn, DXC, nod, libpng, zlib, libuwp) plus
++# any shared library found in the stage 1 link manifest. UWP loads DLLs from the package root.
++file(GLOB _dusk_dlls "${_dusk_uwp_dep}/bin/*.dll")
++
++# The uwp-dep SDL3.dll hangs when opening an audio device (patches/sdl3-uwp-threadid.patch);
++# tools\uwp\sdl3.bat builds a fixed one from extern/SDL3-uwp, which is packaged instead.
++set(DUSK_UWP_SDL3_DLL "${_dusk_root}/build/sdl3-uwp/RelWithDebInfo/SDL3.dll" CACHE FILEPATH
++	"SDL3.dll to package instead of the uwp-dep one (empty: package the uwp-dep SDL3.dll)")
++if (DUSK_UWP_SDL3_DLL)
++	if (NOT EXISTS "${DUSK_UWP_SDL3_DLL}")
++		message(FATAL_ERROR "dusklight-uwp: ${DUSK_UWP_SDL3_DLL} not found. Build it with tools\\uwp\\sdl3.bat, "
++			"or configure with -DDUSK_UWP_SDL3_DLL= to package the uwp-dep SDL3.dll (it hangs when opening audio).")
++	endif ()
++	list(FILTER _dusk_dlls EXCLUDE REGEX "/SDL3\\.dll$")
++	list(APPEND _dusk_dlls "${DUSK_UWP_SDL3_DLL}")
++	message(STATUS "dusklight-uwp: SDL3.dll from ${DUSK_UWP_SDL3_DLL}")
++endif ()
++
++set(_dusk_dll_names "")
++foreach (_dll IN LISTS _dusk_dlls)
++	get_filename_component(_name "${_dll}" NAME)
++	list(APPEND _dusk_dll_names "${_name}")
++endforeach ()
++foreach (_dll IN LISTS DUSK_UWP_RUNTIME_DLLS)
++	get_filename_component(_name "${_dll}" NAME)
++	if (_dll STREQUAL "" OR _name IN_LIST _dusk_dll_names)
++		continue()
++	endif ()
++	if (NOT EXISTS "${_dll}")
++		message(FATAL_ERROR "dusklight-uwp: runtime DLL from stage 1 not found: ${_dll}")
++	endif ()
++	list(APPEND _dusk_dlls "${_dll}")
++	list(APPEND _dusk_dll_names "${_name}")
++endforeach ()
++source_group("BinDeps" FILES ${_dusk_dlls})
++set_source_files_properties(${_dusk_dlls} PROPERTIES
++	VS_COPY_TO_OUT_DIR Always
++	VS_DEPLOYMENT_CONTENT TRUE
++	VS_DEPLOYMENT_LOCATION "."
++)
++target_sources(${PROJECT_NAME} PRIVATE ${_dusk_dlls})
++list(JOIN _dusk_dll_names ", " _dusk_dll_text)
++message(STATUS "dusklight-uwp: packaged DLLs: ${_dusk_dll_text}")
++
++set(PkgAssets
++	Assets/LockScreenLogo.scale-200.png
++	Assets/Square44x44Logo.targetsize-24_altform-unplated.png
++	Assets/Square44x44Logo.scale-200.png
++	Assets/Square150x150Logo.scale-200.png
++	Assets/Wide310x150Logo.scale-200.png
++	Assets/StoreLogo.png
++	Assets/SplashScreen.scale-200.png
++)
++source_group("PkgAssets" FILES ${PkgAssets})
++set_source_files_properties(${PkgAssets} PROPERTIES
++	VS_DEPLOYMENT_CONTENT TRUE
++	VS_DEPLOYMENT_LOCATION "Assets"
++)
++target_sources(${PROJECT_NAME} PRIVATE ${PkgAssets})
++
++# The game library is linked whole, exactly like the objects of the desktop executable.
++target_link_libraries(${PROJECT_NAME} PRIVATE
++	${_dusk_link_libs}
++	WindowsApp.lib
++	OneCore.lib
++	ntdll.lib
++)
++target_link_options(${PROJECT_NAME} PRIVATE
++	"/WHOLEARCHIVE:${DUSK_UWP_GAME_LIB}"
++	/NODEFAULTLIB:libcmt
++	/NODEFAULTLIB:libcmtd
++	${DUSK_UWP_LINK_OPTIONS}
++)
++target_compile_definitions(${PROJECT_NAME} PRIVATE AURORA_WINDOWS_STORE)
++
++# Game resources (fonts, UI, etc.) are read from res/ next to the executable.
++uwp_pkg(${PROJECT_NAME} "${DUSK_UWP_SOURCE_DIR}/res" "res")
+diff -ruN '--exclude=extern' '--exclude=UWP_PORT' '--exclude=UWP_GIT' '--exclude=dusklight-uwp-uwp-1.1.1' '--exclude=dusklight-uwp_1.1.1.0' '--exclude=patches' '--exclude=*.png' '--exclude=PLAN_PORT_UWP.md' '--exclude=GUIA_UWP.md' '--exclude=ESTADO_SESION_UWP.md' ./platforms/uwp/main.cpp UWP_PORT/platforms/uwp/main.cpp
+--- a/platforms/uwp/main.cpp	1970-01-01 01:00:00.000000000 +0100
++++ b/platforms/uwp/main.cpp	2026-11-01 00:48:00.253670557 +0100
+@@ -0,0 +1,24 @@
++// Entry point of the UWP package. The game is SDL_main, compiled into dusklight.lib from
++// src/dusk/main.cpp (stage 1, DUSK_UWP); SDL3-UWP runs it inside a CoreApplication.
++#include <Windows.h>
++
++// The WinRT SDL_main implementation would define its own WinMain (and requires /ZW).
++#define SDL_MAIN_HANDLED
++#include "SDL3/SDL.h"
++#include "SDL3/SDL_main.h"
++
++static int SDLCALL bootstrap(int argc, char** argv)
++{
++  // todo: Force these in SDL-UWP? (at least wgi)
++  SDL_SetHint(SDL_HINT_ENABLE_SCREEN_KEYBOARD, "true");
++  SDL_SetHint(SDL_HINT_JOYSTICK_WGI, "true");
++  // Keep the B button from navigating back to the Xbox home screen.
++  SDL_SetHint(SDL_HINT_WINRT_HANDLE_BACK_BUTTON, "1");
++
++  return SDL_main(argc, argv);
++}
++
++int CALLBACK WinMain(HINSTANCE, HINSTANCE, LPSTR, int)
++{
++  return SDL_RunApp(0, nullptr, bootstrap, nullptr);
++}
+diff -ruN '--exclude=extern' '--exclude=UWP_PORT' '--exclude=UWP_GIT' '--exclude=dusklight-uwp-uwp-1.1.1' '--exclude=dusklight-uwp_1.1.1.0' '--exclude=patches' '--exclude=*.png' '--exclude=PLAN_PORT_UWP.md' '--exclude=GUIA_UWP.md' '--exclude=ESTADO_SESION_UWP.md' ./platforms/uwp/Package.appxmanifest UWP_PORT/platforms/uwp/Package.appxmanifest
+--- a/platforms/uwp/Package.appxmanifest	1970-01-01 01:00:00.000000000 +0100
++++ b/platforms/uwp/Package.appxmanifest	2026-11-01 00:46:36.711442580 +0100
+@@ -0,0 +1,60 @@
++<?xml version="1.0" encoding="utf-8"?>
++
++<!--
++  Package identity for the Dusklight 2.0.3 UWP port.
++  The Name is different from the 1.1.1 port ("Dusklight") so both can be installed side by side.
++  Publisher must match the subject of the certificate used to sign the package (see GUIA_UWP.md).
++-->
++<Package
++  xmlns="http://schemas.microsoft.com/appx/manifest/foundation/windows10"
++  xmlns:uap="http://schemas.microsoft.com/appx/manifest/uap/windows10"
++  xmlns:rescap="http://schemas.microsoft.com/appx/manifest/foundation/windows10/restrictedcapabilities"
++  IgnorableNamespaces="uap rescap">
++
++  <Identity
++    Name="DusklightUWP.v2"
++    Publisher="CN=DusklightUWP"
++    Version="2.0.3.1" />
++
++  <Properties>
++    <DisplayName>Dusklight</DisplayName>
++    <PublisherDisplayName>Dusklight UWP port</PublisherDisplayName>
++    <Logo>Assets\StoreLogo.png</Logo>
++  </Properties>
++
++  <Dependencies>
++    <TargetDeviceFamily Name="Windows.Universal" MinVersion="10.0.17763.0" MaxVersionTested="10.0.26100.0" />
++  </Dependencies>
++
++  <Resources>
++    <Resource Language="x-generate"/>
++  </Resources>
++
++  <Applications>
++    <Application Id="App"
++      Executable="$targetnametoken$.exe"
++      EntryPoint="uwp.App">
++      <uap:VisualElements
++        DisplayName="Dusklight"
++        Square150x150Logo="Assets\Square150x150Logo.png"
++        Square44x44Logo="Assets\Square44x44Logo.png"
++        Description="Dusklight 2.0.3 (UWP port for Xbox Dev Mode)"
++        BackgroundColor="transparent">
++        <uap:DefaultTile Wide310x150Logo="Assets\Wide310x150Logo.png"/>
++        <uap:SplashScreen Image="Assets\SplashScreen.png" />
++      </uap:VisualElements>
++    </Application>
++  </Applications>
++
++  <!-- Same capabilities as the working 1.1.1 port. -->
++  <Capabilities>
++    <Capability Name="internetClient" />
++    <Capability Name="internetClientServer" />
++    <Capability Name="privateNetworkClientServer" />
++    <Capability Name="codeGeneration" />
++    <uap:Capability Name="removableStorage" />
++    <rescap:Capability Name="runFullTrust" />
++    <rescap:Capability Name="broadFileSystemAccess" />
++    <rescap:Capability Name="expandedResources" />
++  </Capabilities>
++</Package>
+diff -ruN '--exclude=extern' '--exclude=UWP_PORT' '--exclude=UWP_GIT' '--exclude=dusklight-uwp-uwp-1.1.1' '--exclude=dusklight-uwp_1.1.1.0' '--exclude=patches' '--exclude=*.png' '--exclude=PLAN_PORT_UWP.md' '--exclude=GUIA_UWP.md' '--exclude=ESTADO_SESION_UWP.md' ./res/rml/window.rcss UWP_PORT/res/rml/window.rcss
+--- a/res/rml/window.rcss	2026-09-30 08:19:34.000000000 +0200
++++ b/res/rml/window.rcss	2026-10-31 19:29:14.489531826 +0100
+@@ -411,6 +411,16 @@
+     padding-right: 0;
+ }
+ 
++/* In-app file browser (UWP / Xbox) */
++window.modal.file-browser {
++    max-width: 960dp;
++    max-height: 720dp;
++}
++
++window.modal.file-browser modal-body {
++    word-break: break-word;
++}
++
+ package-row {
+     display: flex;
+     flex-direction: row;
+diff -ruN '--exclude=extern' '--exclude=UWP_PORT' '--exclude=UWP_GIT' '--exclude=dusklight-uwp-uwp-1.1.1' '--exclude=dusklight-uwp_1.1.1.0' '--exclude=patches' '--exclude=*.png' '--exclude=PLAN_PORT_UWP.md' '--exclude=GUIA_UWP.md' '--exclude=ESTADO_SESION_UWP.md' ./src/dusk/data.hpp UWP_PORT/src/dusk/data.hpp
+--- a/src/dusk/data.hpp	2026-09-30 08:19:34.000000000 +0200
++++ b/src/dusk/data.hpp	2026-10-31 19:25:11.189876595 +0100
+@@ -9,7 +9,7 @@
+ #include <TargetConditionals.h>
+ #endif
+ 
+-#if defined(_WIN32) ||                                                                             \
++#if (defined(_WIN32) && !defined(_UWP)) ||                                                         \
+     (defined(__APPLE__) && !TARGET_OS_IOS && !TARGET_OS_TV && !TARGET_OS_MACCATALYST) ||           \
+     (defined(__linux__) && !defined(__ANDROID__))
+ #define DUSK_CAN_OPEN_DATA_FOLDER 1
+diff -ruN '--exclude=extern' '--exclude=UWP_PORT' '--exclude=UWP_GIT' '--exclude=dusklight-uwp-uwp-1.1.1' '--exclude=dusklight-uwp_1.1.1.0' '--exclude=patches' '--exclude=*.png' '--exclude=PLAN_PORT_UWP.md' '--exclude=GUIA_UWP.md' '--exclude=ESTADO_SESION_UWP.md' ./src/dusk/imgui/ImGuiConsole.cpp UWP_PORT/src/dusk/imgui/ImGuiConsole.cpp
+--- a/src/dusk/imgui/ImGuiConsole.cpp	2026-09-30 08:19:34.000000000 +0200
++++ b/src/dusk/imgui/ImGuiConsole.cpp	2026-10-31 19:25:43.908962400 +0100
+@@ -268,11 +268,13 @@
+ 
+         UpdateSettings();
+ 
++#if !defined(_UWP)
+         if (ImGui::IsKeyPressed(ImGuiKey_F11)) {
+             getSettings().video.enableFullscreen.setValue(!getSettings().video.enableFullscreen);
+             VISetWindowFullscreen(getSettings().video.enableFullscreen);
+             config::save();
+         }
++#endif
+ 
+         if (getSettings().game.enableResetKeybind && ImGui::GetIO().KeyCtrl &&
+             ImGui::IsKeyReleased(ImGuiKey_R) && !fpcM_SearchByName(fpcNm_LOGO_SCENE_e))
+diff -ruN '--exclude=extern' '--exclude=UWP_PORT' '--exclude=UWP_GIT' '--exclude=dusklight-uwp-uwp-1.1.1' '--exclude=dusklight-uwp_1.1.1.0' '--exclude=patches' '--exclude=*.png' '--exclude=PLAN_PORT_UWP.md' '--exclude=GUIA_UWP.md' '--exclude=ESTADO_SESION_UWP.md' ./src/dusk/logging.cpp UWP_PORT/src/dusk/logging.cpp
+--- a/src/dusk/logging.cpp	2026-09-30 08:19:34.000000000 +0200
++++ b/src/dusk/logging.cpp	2026-10-31 23:55:56.427025345 +0100
+@@ -46,5 +46,9 @@
+     options.legacyFilePrefixes = {"dusk"};
+     options.divert = &divert_stub_messages;
+     standard.apply_to(options);
++#if defined(_UWP)
++    // On Xbox the log file is the only diagnostic; a hang or crash would lose the stdio buffer.
++    options.flushOn = borealis::LogLevel::Debug;
++#endif
+     borealis::log::init(options);
+ }
+diff -ruN '--exclude=extern' '--exclude=UWP_PORT' '--exclude=UWP_GIT' '--exclude=dusklight-uwp-uwp-1.1.1' '--exclude=dusklight-uwp_1.1.1.0' '--exclude=patches' '--exclude=*.png' '--exclude=PLAN_PORT_UWP.md' '--exclude=GUIA_UWP.md' '--exclude=ESTADO_SESION_UWP.md' ./src/dusk/main.cpp UWP_PORT/src/dusk/main.cpp
+--- a/src/dusk/main.cpp	2026-09-30 08:19:34.000000000 +0200
++++ b/src/dusk/main.cpp	2026-10-31 19:25:31.553929902 +0100
+@@ -1,8 +1,10 @@
+ #if _WIN32
+ #define WINDOWS_LEAN_AND_MEAN
+ #include <Windows.h>
++#if !defined(_UWP)
+ #include <shellapi.h>
+ #endif
++#endif
+ 
+ #include <aurora/main.h>
+ #include "d/actor/d_a_movie_player.h"
+@@ -34,7 +36,7 @@
+ 
+ bool RestartProcess(int argc, char* argv[]) {
+ #if defined(__ANDROID__) || (defined(TARGET_OS_IOS) && TARGET_OS_IOS) ||                           \
+-    (defined(TARGET_OS_TV) && TARGET_OS_TV)
++    (defined(TARGET_OS_TV) && TARGET_OS_TV) || defined(_UWP)
+     (void)argc;
+     (void)argv;
+     return false;
+@@ -112,7 +114,7 @@
+ #endif
+ }
+ 
+-#if _WIN32
++#if _WIN32 && !defined(_UWP)
+ bool ShouldShowWindowsConsole(int argc, char* argv[]) {
+     if (const auto* env = std::getenv("DUSK_CONSOLE")) {
+         if (env[0] != '\0' && env[0] != '0') {
+@@ -221,11 +223,16 @@
+ 
+ }  // namespace
+ 
++#if defined(_UWP)
++// platforms/uwp/main.cpp owns the entry point and runs this as SDL_main through SDL_RunApp.
++#define SDL_MAIN_EXPORTED
++#include <SDL3/SDL_main.h>
++#endif
+ int main(int argc, char* argv[]) {
+     return DuskMain(argc, argv);
+ }
+ 
+-#if _WIN32
++#if _WIN32 && !defined(_UWP)
+ int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR, int) {
+     return RunWindowsGuiEntryPoint();
+ }
+diff -ruN '--exclude=extern' '--exclude=UWP_PORT' '--exclude=UWP_GIT' '--exclude=dusklight-uwp-uwp-1.1.1' '--exclude=dusklight-uwp_1.1.1.0' '--exclude=patches' '--exclude=*.png' '--exclude=PLAN_PORT_UWP.md' '--exclude=GUIA_UWP.md' '--exclude=ESTADO_SESION_UWP.md' ./src/dusk/main.h UWP_PORT/src/dusk/main.h
+--- a/src/dusk/main.h	2026-09-30 08:19:34.000000000 +0200
++++ b/src/dusk/main.h	2026-10-31 19:25:11.189876595 +0100
+@@ -21,7 +21,7 @@
+ extern StageRequest StageRequested;
+ 
+ #if defined(__ANDROID__) || (defined(TARGET_OS_IOS) && TARGET_OS_IOS) ||                           \
+-    (defined(TARGET_OS_TV) && TARGET_OS_TV)
++    (defined(TARGET_OS_TV) && TARGET_OS_TV) || defined(_UWP)
+ inline constexpr bool SupportsProcessRestart = false;
+ #else
+ inline constexpr bool SupportsProcessRestart = true;
+diff -ruN '--exclude=extern' '--exclude=UWP_PORT' '--exclude=UWP_GIT' '--exclude=dusklight-uwp-uwp-1.1.1' '--exclude=dusklight-uwp_1.1.1.0' '--exclude=patches' '--exclude=*.png' '--exclude=PLAN_PORT_UWP.md' '--exclude=GUIA_UWP.md' '--exclude=ESTADO_SESION_UWP.md' ./src/dusk/ui/file_browser.cpp UWP_PORT/src/dusk/ui/file_browser.cpp
+--- a/src/dusk/ui/file_browser.cpp	1970-01-01 01:00:00.000000000 +0100
++++ b/src/dusk/ui/file_browser.cpp	2026-10-31 19:34:59.800509921 +0100
+@@ -0,0 +1,301 @@
++#include "file_browser.hpp"
++
++#include "dusk/app_info.hpp"
++
++#include <SDL3/SDL_filesystem.h>
++#include <SDL3/SDL_stdinc.h>
++#include <borealis/io.hpp>
++#include <m_Do/m_Do_audio.h>
++
++#include <algorithm>
++#include <array>
++#include <cctype>
++#include <string>
++#include <string_view>
++#include <utility>
++
++#if defined(_WIN32)
++#ifndef WIN32_LEAN_AND_MEAN
++#define WIN32_LEAN_AND_MEAN
++#endif
++#ifndef NOMINMAX
++#define NOMINMAX
++#endif
++#include <windows.h>
++#endif
++
++namespace dusk::ui {
++namespace {
++
++constexpr std::array kDiscExtensions{
++    "iso", "gcm", "ciso", "gcz", "nfs", "rvz", "wbfs", "wia", "tgc",
++};
++
++std::string lowercase(std::string value) {
++    std::ranges::transform(value, value.begin(),
++        [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
++    return value;
++}
++
++bool is_disc_image(const std::filesystem::path& path) {
++    std::string ext = lowercase(borealis::io::fs_path_to_string(path.extension()));
++    if (!ext.empty() && ext.front() == '.') {
++        ext.erase(ext.begin());
++    }
++    return std::ranges::find(kDiscExtensions, std::string_view{ext}) != kDiscExtensions.end();
++}
++
++bool directory_exists(const std::filesystem::path& path) {
++    std::error_code ec;
++    return !path.empty() && std::filesystem::is_directory(path, ec);
++}
++
++std::filesystem::path normalized(const std::filesystem::path& path) {
++    std::error_code ec;
++    auto result = std::filesystem::absolute(path, ec);
++    return ec ? path.lexically_normal() : result.lexically_normal();
++}
++
++bool is_root(const std::filesystem::path& path) {
++    return path.has_root_path() && path.relative_path().empty();
++}
++
++std::vector<std::filesystem::path> list_drives() {
++    std::vector<std::filesystem::path> drives;
++#if defined(_WIN32)
++    std::array<wchar_t, 512> buffer{};
++    const DWORD length = GetLogicalDriveStringsW(static_cast<DWORD>(buffer.size()), buffer.data());
++    if (length == 0 || length >= buffer.size()) {
++        return drives;
++    }
++    for (const wchar_t* drive = buffer.data(); *drive != L'\0';) {
++        const std::wstring_view name{drive};
++        std::filesystem::path root{name};
++        if (directory_exists(root)) {
++            drives.push_back(std::move(root));
++        }
++        drive += name.size() + 1;
++    }
++#endif
++    return drives;
++}
++
++}  // namespace
++
++std::filesystem::path FileBrowser::app_storage_root() {
++    const std::string orgName{AppInfo.orgName};
++    const std::string appName{AppInfo.appName};
++    char* preferencePath = SDL_GetPrefPath(orgName.c_str(), appName.c_str());
++    if (preferencePath == nullptr) {
++        return {};
++    }
++    const auto path = normalized(borealis::io::fs_path_from_utf8(preferencePath));
++    SDL_free(preferencePath);
++    // On UWP the preference path lives inside the package's LocalState folder, which is also
++    // where the Device Portal uploads files.
++    for (auto parent = path; !parent.empty() && !is_root(parent); parent = parent.parent_path()) {
++        if (lowercase(borealis::io::fs_path_to_string(parent.filename())) == "localstate") {
++            return parent;
++        }
++    }
++    return path;
++}
++
++Modal::Props FileBrowser::make_props(Mode mode, FileBrowser* self) {
++    std::vector<ModalAction> actions{
++        ModalAction{
++            .label = "Up",
++            .onPressed =
++                [self](Modal&) {
++                    if (is_root(self->mCurrent)) {
++                        self->mPending = PendingNavigation{View::Drives, {}};
++                    } else {
++                        self->mPending =
++                            PendingNavigation{View::Directory, self->mCurrent.parent_path()};
++                    }
++                },
++            .isDisabled = [self] { return !self->can_go_up(); },
++        },
++        ModalAction{
++            .label = "LocalState",
++            .onPressed =
++                [self](Modal&) {
++                    self->mPending = PendingNavigation{View::Directory, app_storage_root()};
++                },
++        },
++        ModalAction{
++            .label = "Drives",
++            .onPressed =
++                [self](Modal&) { self->mPending = PendingNavigation{View::Drives, {}}; },
++            .isDisabled = [self] { return self->mView == View::Drives; },
++        },
++    };
++    if (mode == Mode::Folder) {
++        actions.push_back(ModalAction{
++            .label = "Use This Folder",
++            .onPressed = [self](Modal&) { self->mPendingSelection = self->mCurrent; },
++            .isDisabled =
++                [self] { return self->mView != View::Directory || !directory_exists(self->mCurrent); },
++        });
++    }
++    actions.push_back(ModalAction{
++        .label = "Cancel",
++        .onPressed =
++            [](Modal& modal) {
++                mDoAud_seStartMenu(kSoundWindowClose);
++                modal.pop();
++            },
++    });
++    return Props{
++        .title = mode == Mode::Folder ? "Select Data Folder" : "Select Disc Image",
++        .actions = std::move(actions),
++        .variant = "file-browser",
++    };
++}
++
++FileBrowser::FileBrowser(
++    Mode mode, std::filesystem::path initialDirectory, SelectCallback onSelected)
++    : Modal(make_props(mode, this)), mMode(mode), mOnSelected(std::move(onSelected)) {
++    if (directory_exists(initialDirectory)) {
++        navigate(View::Directory, std::move(initialDirectory));
++    } else if (auto root = app_storage_root(); directory_exists(root)) {
++        navigate(View::Directory, std::move(root));
++    } else {
++        navigate(View::Drives, {});
++    }
++}
++
++void FileBrowser::update() {
++    Modal::update();
++    if (mPendingSelection) {
++        select(*std::exchange(mPendingSelection, std::nullopt));
++        return;
++    }
++    if (mPending) {
++        auto pending = *std::exchange(mPending, std::nullopt);
++        mDoAud_seStartMenu(kSoundItemChange);
++        navigate(pending.view, std::move(pending.path));
++    }
++}
++
++bool FileBrowser::can_go_up() const {
++    if (mView != View::Directory) {
++        return false;
++    }
++#if defined(_WIN32)
++    if (is_root(mCurrent)) {
++        return true;
++    }
++#endif
++    return !is_root(mCurrent) && directory_exists(mCurrent.parent_path());
++}
++
++void FileBrowser::navigate(View view, std::filesystem::path path) {
++    if (view == View::Directory) {
++        path = normalized(path);
++        if (!directory_exists(path)) {
++            set_body(escape(borealis::io::fs_path_to_string(path)) +
++                     "<br/>That folder is not available.");
++            return;
++        }
++        mCurrent = std::move(path);
++    }
++    mView = view;
++    rebuild();
++}
++
++void FileBrowser::select(std::filesystem::path path) {
++    auto callback = mOnSelected;
++    mDoAud_seStartMenu(kSoundItemChange);
++    pop();
++    if (callback) {
++        callback(path);
++    }
++}
++
++void FileBrowser::rebuild() {
++    auto& pane = content_pane();
++    pane.clear();
++
++    if (mView == View::Drives) {
++        const auto drives = list_drives();
++        set_body(drives.empty() ? "No drives are available." : "Select a drive.");
++        for (const auto& drive : drives) {
++            pane.add_button(borealis::io::fs_path_to_string(drive)).on_pressed([this, drive] {
++                mPending = PendingNavigation{View::Directory, drive};
++            });
++        }
++        focus();
++        return;
++    }
++
++    std::vector<std::filesystem::path> directories;
++    std::vector<std::filesystem::path> files;
++    std::error_code ec;
++    for (std::filesystem::directory_iterator it{mCurrent, ec}, end; !ec && it != end;
++        it.increment(ec))
++    {
++        const auto& path = it->path();
++        const auto name = borealis::io::fs_path_to_string(path.filename());
++        if (name.empty() || name.front() == '.') {
++            continue;
++        }
++        std::error_code statusError;
++        const auto status = it->status(statusError);
++        if (statusError) {
++            continue;
++        }
++        if (std::filesystem::is_directory(status)) {
++            directories.push_back(path);
++        } else if (mMode == Mode::DiscImage && std::filesystem::is_regular_file(status) &&
++                   is_disc_image(path))
++        {
++            files.push_back(path);
++        }
++    }
++
++    const auto byName = [](const std::filesystem::path& a, const std::filesystem::path& b) {
++        return lowercase(borealis::io::fs_path_to_string(a.filename())) <
++               lowercase(borealis::io::fs_path_to_string(b.filename()));
++    };
++    std::ranges::sort(directories, byName);
++    std::ranges::sort(files, byName);
++
++    for (const auto& directory : directories) {
++        pane.add_button("[" + borealis::io::fs_path_to_string(directory.filename()) + "]")
++            .on_pressed([this, directory] {
++                mPending = PendingNavigation{View::Directory, directory};
++            });
++    }
++    for (const auto& file : files) {
++        pane.add_button(borealis::io::fs_path_to_string(file.filename())).on_pressed([this, file] {
++            mPendingSelection = file;
++        });
++    }
++
++    Rml::String body = escape(borealis::io::fs_path_to_string(mCurrent));
++    if (ec) {
++        body += "<br/>" + escape("This folder could not be read: " + ec.message());
++    } else if (directories.empty() && files.empty()) {
++        body += mMode == Mode::DiscImage ? "<br/>No disc images in this folder." :
++                                           "<br/>This folder has no subfolders.";
++    }
++    set_body(body);
++    focus();
++}
++
++void open_file_browser(FileBrowser::Mode mode, std::filesystem::path initialDirectory,
++    FileBrowser::SelectCallback onSelected) {
++    auto browser =
++        std::make_unique<FileBrowser>(mode, std::move(initialDirectory), std::move(onSelected));
++    if (auto* host = top_document()) {
++        host->push(std::move(browser));
++    } else {
++        push_document(std::move(browser));
++    }
++    if (auto* doc = top_document()) {
++        doc->focus();
++    }
++}
++
++}  // namespace dusk::ui
+diff -ruN '--exclude=extern' '--exclude=UWP_PORT' '--exclude=UWP_GIT' '--exclude=dusklight-uwp-uwp-1.1.1' '--exclude=dusklight-uwp_1.1.1.0' '--exclude=patches' '--exclude=*.png' '--exclude=PLAN_PORT_UWP.md' '--exclude=GUIA_UWP.md' '--exclude=ESTADO_SESION_UWP.md' ./src/dusk/ui/file_browser.hpp UWP_PORT/src/dusk/ui/file_browser.hpp
+--- a/src/dusk/ui/file_browser.hpp	1970-01-01 01:00:00.000000000 +0100
++++ b/src/dusk/ui/file_browser.hpp	2026-10-31 19:27:55.619315418 +0100
+@@ -0,0 +1,56 @@
++#pragma once
++
++#include "modal.hpp"
++
++#include <filesystem>
++#include <functional>
++#include <optional>
++#include <vector>
++
++namespace dusk::ui {
++
++// In-app replacement for the system file picker on platforms without one (UWP / Xbox).
++class FileBrowser final : public Modal {
++public:
++    enum class Mode {
++        DiscImage,
++        Folder,
++    };
++    using SelectCallback = std::function<void(const std::filesystem::path&)>;
++
++    FileBrowser(Mode mode, std::filesystem::path initialDirectory, SelectCallback onSelected);
++
++    void update() override;
++
++    // Directory the app can always read and write (the package's LocalState folder on UWP).
++    static std::filesystem::path app_storage_root();
++
++private:
++    enum class View {
++        Drives,
++        Directory,
++    };
++    struct PendingNavigation {
++        View view;
++        std::filesystem::path path;
++    };
++
++    static Props make_props(Mode mode, FileBrowser* self);
++    void navigate(View view, std::filesystem::path path);
++    void select(std::filesystem::path path);
++    void rebuild();
++    bool can_go_up() const;
++
++    Mode mMode;
++    View mView = View::Directory;
++    std::filesystem::path mCurrent;
++    SelectCallback mOnSelected;
++    std::optional<PendingNavigation> mPending;
++    std::optional<std::filesystem::path> mPendingSelection;
++};
++
++// Pushes a FileBrowser on top of the current document.
++void open_file_browser(FileBrowser::Mode mode, std::filesystem::path initialDirectory,
++    FileBrowser::SelectCallback onSelected);
++
++}  // namespace dusk::ui
+diff -ruN '--exclude=extern' '--exclude=UWP_PORT' '--exclude=UWP_GIT' '--exclude=dusklight-uwp-uwp-1.1.1' '--exclude=dusklight-uwp_1.1.1.0' '--exclude=patches' '--exclude=*.png' '--exclude=PLAN_PORT_UWP.md' '--exclude=GUIA_UWP.md' '--exclude=ESTADO_SESION_UWP.md' ./src/dusk/ui/prelaunch.cpp UWP_PORT/src/dusk/ui/prelaunch.cpp
+--- a/src/dusk/ui/prelaunch.cpp	2026-09-30 08:19:34.000000000 +0200
++++ b/src/dusk/ui/prelaunch.cpp	2026-10-31 19:28:28.981406551 +0100
+@@ -11,6 +11,9 @@
+ #include "dusk/settings.h"
+ #include "dusk/ui/format.hpp"
+ #include "dusk/ui/menu_bar.hpp"
++#if defined(_UWP)
++#include "file_browser.hpp"
++#endif
+ #include "mod_updates.hpp"
+ #include "modal.hpp"
+ #include "mods_window.hpp"
+@@ -196,6 +199,10 @@
+ }
+ 
+ void begin_update_check() {
++#if defined(_UWP)
++    // A sideloaded package is never updated from GitHub releases.
++    return;
++#endif
+     if (!getSettings().backend.checkForUpdates.getValue()) {
+         return;
+     }
+@@ -792,12 +799,23 @@
+ 
+ void open_iso_picker() noexcept {
+     ensure_initialized();
++#if defined(_UWP)
++    // No system file picker on Xbox: browse LocalState and attached drives in-app.
++    const auto& configured = prelaunch_state().configuredDiscPath;
++    open_file_browser(FileBrowser::Mode::DiscImage,
++        configured.empty() ? std::filesystem::path{} :
++                             borealis::io::fs_path_from_utf8(configured).parent_path(),
++        [](const std::filesystem::path& path) {
++            begin_disc_verification(borealis::io::fs_path_to_string(path));
++        });
++#else
+     borealis::file_select::open_file(
+         {
+             .parentWindow = aurora::window::get_sdl_window(),
+             .filters = kDiscFileFilters,
+         },
+         &file_dialog_callback);
++#endif
+ }
+ 
+ bool is_restart_pending() noexcept {
+diff -ruN '--exclude=extern' '--exclude=UWP_PORT' '--exclude=UWP_GIT' '--exclude=dusklight-uwp-uwp-1.1.1' '--exclude=dusklight-uwp_1.1.1.0' '--exclude=patches' '--exclude=*.png' '--exclude=PLAN_PORT_UWP.md' '--exclude=GUIA_UWP.md' '--exclude=ESTADO_SESION_UWP.md' ./src/dusk/ui/settings.cpp UWP_PORT/src/dusk/ui/settings.cpp
+--- a/src/dusk/ui/settings.cpp	2026-09-30 08:19:34.000000000 +0200
++++ b/src/dusk/ui/settings.cpp	2026-10-31 19:28:54.422476466 +0100
+@@ -28,6 +28,9 @@
+ #include <aurora/gfx.h>
+ #include <aurora/lib/window.hpp>
+ #include <borealis/file_select.hpp>
++#if defined(_UWP)
++#include "file_browser.hpp"
++#endif
+ #include <borealis/io.hpp>
+ #if BOREALIS_HAS_SENTRY
+ #include <borealis/sentry.hpp>
+@@ -524,8 +527,12 @@
+                     pane.add_rml("Set the disc image that Dusklight uses to launch the game.<br/><br/>"
+                                  "Changes require a restart.");
+                 });
++#if defined(_UWP)
++            if (data::manager().capabilities().canChangeLocation)
++#else
+             if (data::manager().capabilities().canChangeLocation &&
+                 borealis::file_select::capabilities().canOpenFolder)
++#endif
+             {
+                 leftPane.register_control(
+                     leftPane.add_select_button({
+@@ -545,6 +552,16 @@
+                         });
+ #endif
+                         pane.add_button("Change Data Folder").on_pressed([] {
++#if defined(_UWP)
++                            open_file_browser(FileBrowser::Mode::Folder,
++                                data::configured_data_path(),
++                                [](const std::filesystem::path& path) {
++                                    data_folder_dialog_callback({
++                                        .status = borealis::file_select::Status::Selected,
++                                        .locations = {borealis::io::fs_path_to_string(path)},
++                                    });
++                                });
++#else
+                             const auto defaultLocation =
+                                 borealis::io::fs_path_to_string(data::configured_data_path());
+                             borealis::file_select::open_folder(
+@@ -554,8 +571,9 @@
+                                     .requireRealPath = true,
+                                 },
+                                 &data_folder_dialog_callback);
++#endif
+                         });
+-#if defined(_WIN32)
++#if defined(_WIN32) && !defined(_UWP)
+                         pane.add_button("Portable Mode").on_pressed([] {
+                             if (data::set_portable_data_path()) {
+                                 mDoAud_seStartMenu(kSoundItemChange);
+@@ -618,6 +636,7 @@
+                     }
+                     pane.add_rml("<br/>Changes require a restart.");
+                 });
++#if !defined(_UWP)
+             leftPane.register_control(
+                 leftPane.add_select_button({
+                     .key = "Graphics Backend",
+@@ -641,6 +660,7 @@
+                     }
+                     pane.add_rml("<br/>Changes require a restart.");
+                 });
++#endif
+             leftPane.register_control(
+                 leftPane.add_select_button({
+                     .key = "Save File Type",
+@@ -681,6 +701,7 @@
+ 
+         leftPane.add_section("Display");
+ 
++#if !defined(_UWP)
+         leftPane.register_control(leftPane.add_button("Toggle Fullscreen").on_pressed([] {
+             mDoAud_seStartMenu(kSoundItemChange);
+             getSettings().video.enableFullscreen.setValue(!getSettings().video.enableFullscreen);
+@@ -696,6 +717,7 @@
+             VICenterWindow();
+         }),
+             rightPane, [](Pane& pane) { pane.clear(); });
++#endif
+         config_bool_select(leftPane, rightPane, getSettings().video.enableVsync,
+             {
+                 .key = "Enable VSync",
+@@ -769,6 +791,7 @@
+                 pane.add_rml(
+                     "<br/>Display the current framerate in a corner of the screen while playing.");
+             });
++#if !defined(_UWP)
+         config_bool_select(leftPane, rightPane, getSettings().video.rememberWindowSize,
+             {
+                 .key = "Remember Window Size",
+@@ -784,6 +807,7 @@
+                     },
+                 .isDisabled = [] { return IsMobile; },
+             });
++#endif
+ 
+         config_int_select(leftPane, rightPane, getSettings().video.uiScale,
+             "UI Scale", 
+@@ -942,12 +966,14 @@
+                 pane.clear();
+                 pane.add_text("Open input binding configuration.");
+             });
++#if !defined(_UWP)
+         config_bool_select(leftPane, rightPane, getSettings().game.allowBackgroundInput,
+             {
+                 .key = "Allow Background Inputs",
+                 .helpText = "Allow inputs even when the game window is not focused.",
+                 .onChange = [](bool value) { aurora_set_background_input(value); },
+             });
++#endif
+ 
+ #if TOUCH_CONTROLS_AVAILABLE
+         leftPane.add_section("Touch");
+@@ -1581,12 +1607,14 @@
+                 .key = "Show Shader Compilation",
+                 .helpText = "Show an overlay when shaders are being compiled for your hardware.",
+             });
++#if !defined(_UWP)
+         config_bool_select(leftPane, rightPane, getSettings().backend.checkForUpdates,
+             {
+                 .key = "Check for Dusklight Updates",
+                 .helpText = "Checks GitHub releases for a new Dusklight version on startup.<br/><br/>"
+                             "No personal information is transmitted or collected.",
+             });
++#endif
+ #if BOREALIS_HAS_DISCORD
+         config_bool_select(leftPane, rightPane, getSettings().game.enableDiscordPresence,
+             {
+diff -ruN '--exclude=extern' '--exclude=UWP_PORT' '--exclude=UWP_GIT' '--exclude=dusklight-uwp-uwp-1.1.1' '--exclude=dusklight-uwp_1.1.1.0' '--exclude=patches' '--exclude=*.png' '--exclude=PLAN_PORT_UWP.md' '--exclude=GUIA_UWP.md' '--exclude=ESTADO_SESION_UWP.md' ./tools/uwp/check-env.bat UWP_PORT/tools/uwp/check-env.bat
+--- a/tools/uwp/check-env.bat	1970-01-01 01:00:00.000000000 +0100
++++ b/tools/uwp/check-env.bat	2026-10-31 21:35:30.484305225 +0100
+@@ -0,0 +1,42 @@
++@echo off
++rem Comprueba que la consola es la de Visual Studio x64 y que estan cl, cmake y ninja.
++rem La usan fase1.bat y fase2.bat; tambien se puede ejecutar sola.
++setlocal
++set "FAIL="
++
++echo === Entorno de compilacion ===
++if /i "%VSCMD_ARG_TGT_ARCH%"=="x64" (
++    echo Visual Studio %VisualStudioVersion% - destino x64: OK
++) else (
++    echo [ERROR] Esta no es una consola de Visual Studio x64 ^(VSCMD_ARG_TGT_ARCH="%VSCMD_ARG_TGT_ARCH%"^).
++    echo         Abre "x64 Native Tools Command Prompt for VS 2026" desde el menu Inicio.
++    set "FAIL=1"
++)
++
++for %%T in (cl cmake ninja) do (
++    where %%T >nul 2>&1 && (
++        for /f "delims=" %%P in ('where %%T') do echo %%T: %%P
++    ) || (
++        echo [ERROR] %%T no esta en el PATH.
++        set "FAIL=1"
++    )
++)
++where ninja >nul 2>&1 || echo         ninja se instala con el componente "C++ CMake tools for Windows" de Visual Studio Installer.
++
++rem Un zip descargado deja la "marca de la Web" en lo que se extrae y MSBuild no empaqueta esos
++rem ficheros (error MSB3821). Se comprueba con una DLL de uwp-dep.
++for %%I in ("%~dp0..\..") do set "ROOT=%%~fI"
++dir /r "%ROOT%\extern\uwp-dep\x64\bin\z.dll" 2>nul | findstr /c:"Zone.Identifier" >nul && (
++    echo [ERROR] Los ficheros tienen la "marca de la Web" ^(vienen de un zip descargado^) y MSBuild no los empaqueta.
++    echo         Quitala una vez con:
++    echo         powershell -NoProfile -Command "Get-ChildItem -LiteralPath '%ROOT%' -Recurse -File | Unblock-File"
++    echo         Para evitarlo: zip ^> clic derecho ^> Propiedades ^> Desbloquear, antes de extraerlo.
++    set "FAIL=1"
++)
++
++where cmake >nul 2>&1 && cmake --version | findstr /b /c:"cmake version"
++where ninja >nul 2>&1 && (for /f "delims=" %%V in ('ninja --version') do echo ninja version %%V)
++echo.
++
++if defined FAIL exit /b 1
++exit /b 0
+diff -ruN '--exclude=extern' '--exclude=UWP_PORT' '--exclude=UWP_GIT' '--exclude=dusklight-uwp-uwp-1.1.1' '--exclude=dusklight-uwp_1.1.1.0' '--exclude=patches' '--exclude=*.png' '--exclude=PLAN_PORT_UWP.md' '--exclude=GUIA_UWP.md' '--exclude=ESTADO_SESION_UWP.md' ./tools/uwp/check-imports.ps1 UWP_PORT/tools/uwp/check-imports.ps1
+--- a/tools/uwp/check-imports.ps1	1970-01-01 01:00:00.000000000 +0100
++++ b/tools/uwp/check-imports.ps1	2026-11-01 10:14:26.344405318 +0100
+@@ -0,0 +1,144 @@
++<#
++.SYNOPSIS
++    Lists the DLLs (and functions) imported by the Dusklight UWP build and flags the ones that
++    are usually not available on Xbox, so desktop-only dependencies can be found before (or after)
++    the app fails to start on the console.
++
++.DESCRIPTION
++    Needs dumpbin.exe: run it from the "x64 Native Tools Command Prompt for VS" (fase2.bat runs it
++    automatically) or from a "Developer PowerShell for VS", after building stage 2.
++    By default it looks for dusklight-uwp.exe under build\uwp and checks the executable and every
++    DLL next to it. The full report is saved to imports-report.txt at the repository root and a
++    summary is printed.
++
++    DLLs shipped prebuilt by extern\uwp-dep are reported separately ([~]): they come from the
++    uwp-dep project and are not built here. A DLL that replaces one of them under the same name
++    (the SDL3.dll built by sdl3.bat) is checked like the files built here.
++
++.EXAMPLE
++    powershell -NoProfile -ExecutionPolicy Bypass -File tools\uwp\check-imports.ps1
++.EXAMPLE
++    powershell -NoProfile -ExecutionPolicy Bypass -File tools\uwp\check-imports.ps1 -Path build\uwp\Release
++#>
++param(
++    [string]$Path = (Join-Path $PSScriptRoot "..\..\build\uwp"),
++    [string]$Report = (Join-Path $PSScriptRoot "..\..\imports-report.txt")
++)
++
++$ErrorActionPreference = "Stop"
++
++if (-not (Get-Command dumpbin.exe -ErrorAction SilentlyContinue)) {
++    Write-Error ("dumpbin.exe not found. Run this script from the 'x64 Native Tools Command Prompt " +
++        "for VS' or a 'Developer PowerShell for VS'.")
++}
++
++# English dumpbin output whatever the Visual Studio language, so it can be parsed.
++$env:VSLANG = "1033"
++
++# DLLs that exist on desktop Windows but not (or only partially) in the Xbox app environment,
++# plus the desktop VC++ runtime, which UWP packages replace with the *_app.dll variants.
++$suspicious = @(
++    "user32.dll", "gdi32.dll", "shell32.dll", "comdlg32.dll", "comctl32.dll", "winspool.drv",
++    "dbghelp.dll", "imagehlp.dll", "version.dll", "shlwapi.dll", "setupapi.dll", "dwmapi.dll",
++    "uxtheme.dll", "imm32.dll", "opengl32.dll", "vulkan-1.dll", "d3d9.dll", "dinput8.dll",
++    "winmm.dll", "hid.dll", "psapi.dll", "wtsapi32.dll", "userenv.dll", "netapi32.dll",
++    "vcruntime140.dll", "vcruntime140_1.dll", "msvcp140.dll", "msvcp140_1.dll", "concrt140.dll"
++)
++
++# Functions from the list above that the 1.1.1 port (same toolchain, working on Xbox) already
++# imported: ImGui clipboard/IME/shell defaults and its SDL3 backend, and RmlUi's assert dialog.
++$knownOnXbox = @{
++    "user32.dll" = @("CloseClipboard", "EmptyClipboard", "GetClipboardData", "GetWindowLongA",
++        "MessageBoxA", "OpenClipboard", "SetClipboardData", "SetWindowLongA", "ShowWindow")
++    "imm32.dll" = @("ImmGetContext", "ImmReleaseContext", "ImmSetCandidateWindow", "ImmSetCompositionWindow")
++    "shell32.dll" = @("ShellExecuteW")
++}
++
++$uwpDepBin = Join-Path $PSScriptRoot "..\..\extern\uwp-dep\x64\bin"
++$prebuilt = @{}
++if (Test-Path $uwpDepBin) {
++    Get-ChildItem -Path $uwpDepBin -Filter "*.dll" | ForEach-Object { $prebuilt[$_.Name.ToLowerInvariant()] = $_.FullName }
++}
++
++$item = Get-Item $Path
++if ($item.PSIsContainer) {
++    $exe = Get-ChildItem -Path $item.FullName -Recurse -Filter "dusklight-uwp.exe" |
++        Where-Object { $_.FullName -notmatch "\\AppPackages\\" } |
++        Sort-Object LastWriteTime -Descending | Select-Object -First 1
++    if (-not $exe) {
++        Write-Error "dusklight-uwp.exe not found under $($item.FullName). Build stage 2 first."
++    }
++    $binaries = @($exe) + @(Get-ChildItem -Path $exe.DirectoryName -Filter "*.dll")
++} else {
++    $binaries = @($item)
++}
++
++$lines = New-Object System.Collections.Generic.List[string]
++$problems = New-Object System.Collections.Generic.List[string]
++$notes = New-Object System.Collections.Generic.List[string]
++
++$lines.Add("Checked: $($binaries[0].FullName)")
++$lines.Add("")
++
++foreach ($binary in $binaries) {
++    # Prebuilt only if it is the very file from uwp-dep, not just one with the same name.
++    $source = $prebuilt[$binary.Name.ToLowerInvariant()]
++    $isPrebuilt = [bool]$source -and
++        ((Get-FileHash $source).Hash -eq (Get-FileHash $binary.FullName).Hash)
++    $lines.Add("== $($binary.Name)$(if ($isPrebuilt) { ' (prebuilt, uwp-dep)' })")
++    $current = $null
++    $functions = [ordered]@{}
++    foreach ($line in (& dumpbin.exe /nologo /imports $binary.FullName)) {
++        if ($line -match '^\s{4}(\S+\.(dll|drv|exe))\s*$') {
++            $current = $Matches[1].ToLowerInvariant()
++            if (-not $functions.Contains($current)) {
++                $functions[$current] = New-Object System.Collections.Generic.List[string]
++            }
++        } elseif ($current -and $line -match '^\s+[0-9A-Fa-f]+\s+(\S+)\s*$') {
++            $functions[$current].Add($Matches[1])
++        } elseif ($line -match '^\s*Summary\s*$') {
++            break
++        }
++    }
++    foreach ($dll in ($functions.Keys | Sort-Object)) {
++        $unknown = @($functions[$dll] | Where-Object { $knownOnXbox[$dll] -notcontains $_ })
++        if ($suspicious -contains $dll -and $unknown.Count -eq 0) {
++            $lines.Add("      $dll ($($functions[$dll].Count), all used by the 1.1.1 port)")
++        } elseif ($suspicious -contains $dll) {
++            $names = ($unknown | Select-Object -First 25) -join ", "
++            $entry = "$($binary.Name) imports $dll ($names)"
++            if ($isPrebuilt) {
++                $lines.Add("  [~] $dll -> $names")
++                $notes.Add($entry)
++            } else {
++                $lines.Add("  [!] $dll -> $names")
++                $problems.Add($entry)
++            }
++        } else {
++            $lines.Add("      $dll ($($functions[$dll].Count))")
++        }
++    }
++}
++
++$summary = New-Object System.Collections.Generic.List[string]
++if ($problems.Count -eq 0) {
++    $summary.Add("No suspicious imports found in the files built here.")
++} else {
++    $summary.Add("Suspicious imports ($($problems.Count)):")
++    foreach ($problem in $problems) {
++        $summary.Add("  [!] $problem")
++    }
++}
++if ($notes.Count -gt 0) {
++    $summary.Add("Prebuilt uwp-dep DLLs (informational, $($notes.Count)):")
++    foreach ($note in $notes) {
++        $summary.Add("  [~] $note")
++    }
++}
++
++$lines.Add("")
++$lines.AddRange($summary)
++$lines | Set-Content -Path $Report -Encoding UTF8
++
++$summary | Write-Output
++Write-Output "Report saved to $((Resolve-Path $Report).Path)"
+diff -ruN '--exclude=extern' '--exclude=UWP_PORT' '--exclude=UWP_GIT' '--exclude=dusklight-uwp-uwp-1.1.1' '--exclude=dusklight-uwp_1.1.1.0' '--exclude=patches' '--exclude=*.png' '--exclude=PLAN_PORT_UWP.md' '--exclude=GUIA_UWP.md' '--exclude=ESTADO_SESION_UWP.md' ./tools/uwp/compilar.bat UWP_PORT/tools/uwp/compilar.bat
+--- a/tools/uwp/compilar.bat	1970-01-01 01:00:00.000000000 +0100
++++ b/tools/uwp/compilar.bat	2026-11-01 00:50:45.496041987 +0100
+@@ -0,0 +1,13 @@
++@echo off
++rem Dusklight UWP: compila todo en orden (fase 1, SDL3 corregida y fase 2) y se para en el primer
++rem error. Ejecutar desde "x64 Native Tools Command Prompt for VS 2026". Cada paso deja sus logs en
++rem la raiz (ver GUIA_UWP.md). Las opciones extra de CMake van a la fase 1, por ejemplo:
++rem   tools\uwp\compilar.bat -DDUSK_UWP_NETWORK=OFF
++rem Para firmar en la fase 2: set DUSK_UWP_CERTIFICATE=C:\certs\dusklight.pfx antes de ejecutarlo.
++setlocal
++call "%~dp0fase1.bat" %* || exit /b 1
++call "%~dp0sdl3.bat" || exit /b 1
++call "%~dp0fase2.bat" || exit /b 1
++echo.
++echo Todo compilado. Siguiente: GUIA_UWP.md, paso 4 (empaquetar).
++exit /b 0
+diff -ruN '--exclude=extern' '--exclude=UWP_PORT' '--exclude=UWP_GIT' '--exclude=dusklight-uwp-uwp-1.1.1' '--exclude=dusklight-uwp_1.1.1.0' '--exclude=patches' '--exclude=*.png' '--exclude=PLAN_PORT_UWP.md' '--exclude=GUIA_UWP.md' '--exclude=ESTADO_SESION_UWP.md' ./tools/uwp/fase1.bat UWP_PORT/tools/uwp/fase1.bat
+--- a/tools/uwp/fase1.bat	1970-01-01 01:00:00.000000000 +0100
++++ b/tools/uwp/fase1.bat	2026-10-31 20:31:21.392873489 +0100
+@@ -0,0 +1,37 @@
++@echo off
++rem Dusklight UWP, fase 1: compila el juego como libreria estatica (preset windows-uwp-lib).
++rem Ejecutar desde "x64 Native Tools Command Prompt for VS 2026".
++rem Deja entorno.log, fase1-configure.log y fase1-build.log en la raiz.
++rem Admite opciones extra de CMake, por ejemplo: tools\uwp\fase1.bat -DDUSK_UWP_NETWORK=OFF
++setlocal
++cd /d "%~dp0..\.."
++
++call "%~dp0check-env.bat" > entorno.log 2>&1
++set "ENV_RC=%errorlevel%"
++type entorno.log
++if not "%ENV_RC%"=="0" (
++    echo [ERROR] Corrige el entorno y vuelve a ejecutar. Detalles en entorno.log
++    exit /b 1
++)
++
++rem Una configuracion fallida anterior deja una cache incompleta: se rehace desde cero.
++set "FRESH="
++if exist "build\uwp-lib\CMakeCache.txt" if not exist "build\uwp-lib\build.ninja" set "FRESH=--fresh"
++
++echo Configurando... (fase1-configure.log)
++cmake --preset windows-uwp-lib %FRESH% %* > fase1-configure.log 2>&1
++if errorlevel 1 (
++    echo [ERROR] La configuracion ha fallado. Envia fase1-configure.log y entorno.log
++    exit /b 1
++)
++
++echo Compilando... (fase1-build.log) La primera vez tarda bastante.
++cmake --build --preset windows-uwp-lib > fase1-build.log 2>&1
++if errorlevel 1 (
++    echo [ERROR] La compilacion ha fallado. Envia fase1-build.log
++    exit /b 1
++)
++
++echo.
++echo Fase 1 completada: build\uwp-lib\dusklight.lib y build\uwp-lib\uwp_link.cmake
++exit /b 0
+diff -ruN '--exclude=extern' '--exclude=UWP_PORT' '--exclude=UWP_GIT' '--exclude=dusklight-uwp-uwp-1.1.1' '--exclude=dusklight-uwp_1.1.1.0' '--exclude=patches' '--exclude=*.png' '--exclude=PLAN_PORT_UWP.md' '--exclude=GUIA_UWP.md' '--exclude=ESTADO_SESION_UWP.md' ./tools/uwp/fase2.bat UWP_PORT/tools/uwp/fase2.bat
+--- a/tools/uwp/fase2.bat	1970-01-01 01:00:00.000000000 +0100
++++ b/tools/uwp/fase2.bat	2026-11-01 00:51:07.415084634 +0100
+@@ -0,0 +1,59 @@
++@echo off
++rem Dusklight UWP, fase 2: genera y compila el proyecto UWP de platforms\uwp.
++rem Ejecutar desde "x64 Native Tools Command Prompt for VS 2026", despues de fase1.bat y sdl3.bat.
++rem Deja fase2-configure.log, fase2-build.log e imports-report.txt en la raiz.
++rem Admite opciones extra de CMake, por ejemplo: tools\uwp\fase2.bat -DDUSK_UWP_CERTIFICATE=C:\certs\dusklight.pfx
++rem o el certificado en una variable: set DUSK_UWP_CERTIFICATE=C:\certs\dusklight.pfx
++setlocal
++cd /d "%~dp0..\.."
++
++call "%~dp0check-env.bat" > entorno.log 2>&1
++set "ENV_RC=%errorlevel%"
++type entorno.log
++if not "%ENV_RC%"=="0" (
++    echo [ERROR] Corrige el entorno y vuelve a ejecutar. Detalles en entorno.log
++    exit /b 1
++)
++
++if not exist "build\uwp-lib\uwp_link.cmake" (
++    echo [ERROR] Falta la fase 1 ^(build\uwp-lib\uwp_link.cmake^). Ejecuta antes tools\uwp\fase1.bat
++    exit /b 1
++)
++
++if not exist "build\sdl3-uwp\RelWithDebInfo\SDL3.dll" (
++    echo [AVISO] Falta la SDL3 corregida ^(build\sdl3-uwp\RelWithDebInfo\SDL3.dll^). Ejecuta antes tools\uwp\sdl3.bat
++)
++
++rem Mismo Visual Studio que la consola actual. Se puede forzar con DUSK_VS_GENERATOR.
++set "GEN=%DUSK_VS_GENERATOR%"
++if not defined GEN if "%VisualStudioVersion%"=="18.0" set "GEN=Visual Studio 18 2026"
++if not defined GEN if "%VisualStudioVersion%"=="17.0" set "GEN=Visual Studio 17 2022"
++if not defined GEN (
++    echo [ERROR] Version de Visual Studio no reconocida: "%VisualStudioVersion%".
++    echo         Indica el generador, por ejemplo: set DUSK_VS_GENERATOR=Visual Studio 18 2026
++    exit /b 1
++)
++
++echo Configurando con "%GEN%"... (fase2-configure.log)
++set "CERT_ARG="
++if defined DUSK_UWP_CERTIFICATE set CERT_ARG="-DDUSK_UWP_CERTIFICATE=%DUSK_UWP_CERTIFICATE%"
++cmake -S platforms\uwp -B build\uwp -G "%GEN%" -A x64 %CERT_ARG% %* > fase2-configure.log 2>&1
++if errorlevel 1 (
++    echo [ERROR] La configuracion ha fallado. Envia fase2-configure.log
++    exit /b 1
++)
++
++echo Compilando... (fase2-build.log)
++cmake --build build\uwp --config RelWithDebInfo > fase2-build.log 2>&1
++if errorlevel 1 (
++    echo [ERROR] La compilacion ha fallado. Envia fase2-build.log
++    exit /b 1
++)
++
++echo Comprobando importaciones... (imports-report.txt)
++powershell -NoProfile -ExecutionPolicy Bypass -File "%~dp0check-imports.ps1"
++if errorlevel 1 echo [AVISO] No se han podido comprobar las importaciones. Envia lo que haya salido arriba.
++
++echo.
++echo Fase 2 completada. Envia imports-report.txt. Para empaquetar abre build\uwp\dusklight-uwp.slnx (.sln con VS 2022; GUIA_UWP.md, paso 4).
++exit /b 0
+diff -ruN '--exclude=extern' '--exclude=UWP_PORT' '--exclude=UWP_GIT' '--exclude=dusklight-uwp-uwp-1.1.1' '--exclude=dusklight-uwp_1.1.1.0' '--exclude=patches' '--exclude=*.png' '--exclude=PLAN_PORT_UWP.md' '--exclude=GUIA_UWP.md' '--exclude=ESTADO_SESION_UWP.md' ./tools/uwp/sdl3.bat UWP_PORT/tools/uwp/sdl3.bat
+--- a/tools/uwp/sdl3.bat	1970-01-01 01:00:00.000000000 +0100
++++ b/tools/uwp/sdl3.bat	2026-11-01 00:46:13.204372646 +0100
+@@ -0,0 +1,50 @@
++@echo off
++rem Dusklight UWP: compila SDL3 para UWP desde extern\SDL3-uwp (SDL3-uwp ddd5d4f99 con la correccion
++rem platforms\uwp\patches\sdl3-uwp-threadid.patch). La SDL3.dll de uwp-dep se cuelga al abrir el audio.
++rem Ejecutar desde "x64 Native Tools Command Prompt for VS 2026". Basta una vez; despues, fase2.bat
++rem empaqueta build\sdl3-uwp\RelWithDebInfo\SDL3.dll en lugar de la de uwp-dep.
++rem Deja sdl3-configure.log y sdl3-build.log en la raiz.
++setlocal
++cd /d "%~dp0..\.."
++
++call "%~dp0check-env.bat" > entorno.log 2>&1
++set "ENV_RC=%errorlevel%"
++type entorno.log
++if not "%ENV_RC%"=="0" (
++    echo [ERROR] Corrige el entorno y vuelve a ejecutar. Detalles en entorno.log
++    exit /b 1
++)
++
++rem Mismo Visual Studio que la consola actual. Se puede forzar con DUSK_VS_GENERATOR.
++set "GEN=%DUSK_VS_GENERATOR%"
++if not defined GEN if "%VisualStudioVersion%"=="18.0" set "GEN=Visual Studio 18 2026"
++if not defined GEN if "%VisualStudioVersion%"=="17.0" set "GEN=Visual Studio 17 2022"
++if not defined GEN (
++    echo [ERROR] Version de Visual Studio no reconocida: "%VisualStudioVersion%".
++    echo         Indica el generador, por ejemplo: set DUSK_VS_GENERATOR=Visual Studio 18 2026
++    exit /b 1
++)
++
++echo Configurando SDL3 con "%GEN%"... (sdl3-configure.log)
++cmake -S extern\SDL3-uwp -B build\sdl3-uwp -G "%GEN%" -A x64 -DCMAKE_SYSTEM_NAME=WindowsStore -DCMAKE_SYSTEM_VERSION=10.0 -DSDL_SHARED=ON -DSDL_STATIC=OFF -DSDL_TEST_LIBRARY=OFF -DSDL_TESTS=OFF -DSDL_EXAMPLES=OFF -DSDL_INSTALL=OFF "-DSDL_REVISION=SDL-3.4.16-uwp-ddd5d4f99-dusklight-threadid" %* > sdl3-configure.log 2>&1
++if errorlevel 1 (
++    echo [ERROR] La configuracion de SDL3 ha fallado. Envia sdl3-configure.log
++    exit /b 1
++)
++
++echo Compilando SDL3... (sdl3-build.log)
++cmake --build build\sdl3-uwp --config RelWithDebInfo > sdl3-build.log 2>&1
++if errorlevel 1 (
++    echo [ERROR] La compilacion de SDL3 ha fallado. Envia sdl3-build.log
++    exit /b 1
++)
++
++if not exist "build\sdl3-uwp\RelWithDebInfo\SDL3.dll" (
++    echo [ERROR] No se encuentra build\sdl3-uwp\RelWithDebInfo\SDL3.dll. Envia sdl3-build.log
++    exit /b 1
++)
++
++echo.
++echo SDL3 corregida: build\sdl3-uwp\RelWithDebInfo\SDL3.dll
++echo Ahora ejecuta tools\uwp\fase2.bat
++exit /b 0

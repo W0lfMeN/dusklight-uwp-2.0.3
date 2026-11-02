@@ -1967,7 +1967,11 @@ static void demo_camera_shop(npc_henna_class* i_this) {
                         i_this->mMsgFlow.init(actor, 0x365, 0, NULL);
                         /* dSv_event_flag_c::KORO2_ALLCLEAR - Fishing - After all stages (8-8) of roll goal game cleared */
                         dComIfGs_onEventBit(dSv_event_flag_c::saveBitLabels[0x335]);
+#if TARGET_PC
+                        dComIfGp_setItemRupeeCount(dComIfGs_getRupeeMax());
+#else
                         dComIfGp_setItemRupeeCount(1000);
+#endif
                     } else if ((lbl_82_bss_91 & 0x38) == 0) {
                         i_this->mMsgFlow.init(actor, 0x34f, 0, NULL);
                         /* dSv_event_flag_c::F_0469 - Fishing Pond - Reserved for fishing */
@@ -2846,13 +2850,13 @@ static int daNpc_Henna_Create(fopAc_ac_c* i_this) {
     return loadResult;
 }
 
-static actor_method_class l_daNpc_Henna_Method = {
+static DUSK_CONST actor_method_class l_daNpc_Henna_Method = {
     (process_method_func)daNpc_Henna_Create,  (process_method_func)daNpc_Henna_Delete,
     (process_method_func)daNpc_Henna_Execute, (process_method_func)daNpc_Henna_IsDelete,
     (process_method_func)daNpc_Henna_Draw,
 };
 
-actor_process_profile_definition g_profile_NPC_HENNA = {
+DUSK_PROFILE actor_process_profile_definition DUSK_CONST g_profile_NPC_HENNA = {
     /* Layer ID     */ fpcLy_CURRENT_e,
     /* List ID      */ 7,
     /* List Prio    */ fpcPi_CURRENT_e,
