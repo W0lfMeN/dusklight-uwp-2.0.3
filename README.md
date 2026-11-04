@@ -99,9 +99,6 @@ Then open `build\uwp\dusklight-uwp.slnx`:
   certificate with publisher `CN=DusklightUWP` (must match the manifest), version from the manifest
   with auto-increment off, generate bundle *Always*, x64 only, *RelWithDebInfo*.
 
-The script messages and the detailed guide are in Spanish: see [GUIA_UWP.md](GUIA_UWP.md) for every
-step, the options and the logs to check when something fails.
-
 ### Versions and release tags
 
 - The **package version** is in `platforms/uwp/Package.appxmanifest`. Increase its last number for
@@ -128,7 +125,6 @@ step, the options and the logs to check when something fails.
     ID, so opening a WASAPI audio device deadlocked (black screen right after "Powered by aurora").
 - **Not included:** the `mods/randomizer` and `mods/cosmetics` submodules (only used by code mods).
 - Reference diffs against the upstream sources: [`platforms/uwp/patches/`](platforms/uwp/patches).
-- Design notes and status (Spanish): [PLAN_PORT_UWP.md](PLAN_PORT_UWP.md).
 
 | Component | Source | Commit |
 |---|---|---|
